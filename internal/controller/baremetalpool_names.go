@@ -19,6 +19,8 @@ package controller
 import (
 	"fmt"
 	"time"
+
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
 const (
@@ -28,11 +30,11 @@ const (
 
 var (
 	// bareMetalPoolFinalizer is the finalizer added to BareMetalPool resources
-	BareMetalPoolFinalizer string = fmt.Sprintf("%s/bare-metal-pool", osacPrefix)
+	BareMetalPoolFinalizer string = fmt.Sprintf("%s/bare-metal-pool", shared.OsacPrefix)
 
 	// bareMetalPoolLabelKey is the label key used to identify BareMetalPool ownership
-	BareMetalPoolLabelKey string = fmt.Sprintf("%s/bare-metal-pool-id", osacPrefix)
+	BareMetalPoolLabelKey string = fmt.Sprintf("%s/bare-metal-pool-id", shared.OsacPrefix)
 
 	// hostTypeLabelKey is the label key used to identify the host type
-	HostTypeLabelKey string = fmt.Sprintf("%s/host-type", osacPrefix)
+	HostTypeLabelKey string = fmt.Sprintf("%s/host-type", shared.OsacPrefix)
 )

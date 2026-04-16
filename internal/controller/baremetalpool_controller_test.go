@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	osacv1alpha1 "github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
 )
 
 // mockClient wraps a real client and allows injecting errors
@@ -79,6 +80,16 @@ func (m *mockStatusWriter) Update(ctx context.Context, obj client.Object, opts .
 		return m.updateFunc(ctx, obj, opts...)
 	}
 	return m.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+// getCondition returns the condition with the given type, or nil if not found
+func getCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }
 
 var _ = Describe("BareMetalPool Controller", func() {
@@ -853,6 +864,141 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
 			Expect(condition.Message).To(Equal("Failed to delete HostLease CR"))
+		})
+	})
+
+	Context("When BareMetalPool has a profile", func() {
+		BeforeEach(func() {
+			testPoolName = "test-pool-profile"
+			testPool = &osacv1alpha1.BareMetalPool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testPoolName,
+					Namespace:  testNamespace,
+					Finalizers: []string{BareMetalPoolFinalizer},
+				},
+				Spec: osacv1alpha1.BareMetalPoolSpec{
+					HostSets: []osacv1alpha1.BareMetalHostSet{
+						{
+							HostType: "fc430",
+							Replicas: 1,
+						},
+					},
+					Profile: &osacv1alpha1.ProfileSpec{
+						Name:               "test_profile",
+						TemplateParameters: `{"key":"value"}`,
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, testPool)).To(Succeed())
+		})
+
+		It("should propagate profile template parameters to host leases", func() {
+			Expect(profile.LoadProfiles([]*profile.Profile{
+				{
+					Name:                       "test_profile",
+					ExpectedTemplateParameters: []string{"key"},
+					BareMetalPoolTemplate:      "test_bmp_template",
+					HostTemplate:               "test_hl_template",
+				},
+			})).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testPoolName,
+					Namespace: testNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedPool := &osacv1alpha1.BareMetalPool{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      testPoolName,
+				Namespace: testNamespace,
+			}, updatedPool)).To(Succeed())
+
+			hostLeaseList := &osacv1alpha1.HostLeaseList{}
+			err = k8sClient.List(ctx, hostLeaseList,
+				client.InNamespace(testNamespace),
+				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hostLeaseList.Items).To(HaveLen(1))
+			Expect(hostLeaseList.Items[0].Spec.TemplateParameters).To(Equal(`{"key":"value"}`))
+		})
+	})
+
+	Context("When BareMetalPool references a non-existent profile", func() {
+		BeforeEach(func() {
+			testPoolName = "test-pool-missing-profile"
+			testPool = &osacv1alpha1.BareMetalPool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testPoolName,
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.BareMetalPoolSpec{
+					HostSets: []osacv1alpha1.BareMetalHostSet{
+						{
+							HostType: "fc430",
+							Replicas: 1,
+						},
+					},
+					Profile: &osacv1alpha1.ProfileSpec{
+						Name:               "non-existent-profile",
+						TemplateParameters: `{"key":"value"}`,
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, testPool)).To(Succeed())
+		})
+
+		It("should set status condition to Failed with 'Profile does not exist' message", func() {
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testPoolName,
+					Namespace: testNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedPool := &osacv1alpha1.BareMetalPool{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      testPoolName,
+				Namespace: testNamespace,
+			}, updatedPool)).To(Succeed())
+
+			// Verify the Ready condition is set to False
+			readyCondition := getCondition(updatedPool.Status.Conditions, osacv1alpha1.BareMetalPoolConditionTypeReady)
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
+			Expect(readyCondition.Message).To(Equal("Profile does not exist"))
+		})
+
+		It("should not create any HostLeases when profile doesn't exist", func() {
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testPoolName,
+					Namespace: testNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedPool := &osacv1alpha1.BareMetalPool{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      testPoolName,
+				Namespace: testNamespace,
+			}, updatedPool)).To(Succeed())
+
+			// Verify no HostLeases were created
+			hostLeaseList := &osacv1alpha1.HostLeaseList{}
+			err = k8sClient.List(ctx, hostLeaseList,
+				client.InNamespace(testNamespace),
+				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hostLeaseList.Items).To(BeEmpty())
 		})
 	})
 

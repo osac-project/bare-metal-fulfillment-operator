@@ -44,6 +44,7 @@ import (
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/controller"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/helpers"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -54,10 +55,12 @@ var (
 
 const (
 	envInventoryConfigPath = "OSAC_INVENTORY_CONFIG_PATH"
+	envProfileConfigPath   = "OSAC_PROFILE_CONFIG_PATH"
 
-	envHostDeletionPollInterval        = "OSAC_HOST_DELETION_POLL_INTERVAL"
-	envNoFreeHostsPollInterval         = "OSAC_NO_FREE_HOSTS_POLL_INTERVAL"
-	envTryLockFailPollInterval         = "OSAC_TRY_LOCK_FAIL_POLL_INTERVAL"
+	envHostDeletionPollInterval = "OSAC_HOST_DELETION_POLL_INTERVAL"
+	envNoFreeHostsPollInterval  = "OSAC_NO_FREE_HOSTS_POLL_INTERVAL"
+	envTryLockFailPollInterval  = "OSAC_TRY_LOCK_FAIL_POLL_INTERVAL"
+
 	envHostLeaseMaxConcurrentReconcile = "OSAC_HOSTLEASE_MAX_CONCURRENT_RECONCILES"
 )
 
@@ -263,6 +266,31 @@ func main() {
 
 // setupBareMetalPoolController registers the BareMetalPool controller.
 func setupBareMetalPoolController(mgr ctrl.Manager) error {
+	// Load profile configuration
+	profileConfigPath := helpers.GetEnvWithDefault(
+		envProfileConfigPath,
+		"/etc/osac/profile/profile.yaml",
+	)
+
+	profileData, err := os.ReadFile(profileConfigPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			setupLog.Error(err, "unable to read profile config file")
+			return err
+		}
+		setupLog.Info("No profile config file found, starting without profiles", "path", profileConfigPath)
+	} else {
+		var profiles []*profile.Profile
+		if err := yaml.Unmarshal(profileData, &profiles); err != nil {
+			setupLog.Error(err, "unable to parse profile config")
+			return err
+		}
+		if err := profile.LoadProfiles(profiles); err != nil {
+			setupLog.Error(err, "unable to load profile config")
+			return err
+		}
+	}
+
 	hostDeletionPollIntervalDuration := helpers.GetEnvWithDefault(
 		envHostDeletionPollInterval,
 		controller.DefaultHostDeletionPollIntervalDuration,

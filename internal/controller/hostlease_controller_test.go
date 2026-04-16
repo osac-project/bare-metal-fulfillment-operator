@@ -33,6 +33,7 @@ import (
 
 	"github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
 // mockInventoryClient implements inventory.Client for testing
@@ -179,8 +180,8 @@ var _ = Describe("HostLease Controller", func() {
 					ExternalHostName: "test-host",
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
-							"managedBy":      "baremetal",
-							"provisionState": "available",
+							"managedBy":      shared.OsacDefaultManagedByValue,
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -250,8 +251,8 @@ var _ = Describe("HostLease Controller", func() {
 					ExternalHostName: "test-host",
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
-							"managedBy":      "baremetal",
-							"provisionState": "available",
+							"managedBy":      shared.OsacDefaultManagedByValue,
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -379,8 +380,8 @@ var _ = Describe("HostLease Controller", func() {
 					HostType: "fc430",
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
-							"managedBy":      "baremetal",
-							"provisionState": "available",
+							"managedBy":      shared.OsacDefaultManagedByValue,
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -581,7 +582,7 @@ var _ = Describe("HostLease Controller", func() {
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      "ironic",
-							"provisionState": "available",
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -639,7 +640,7 @@ var _ = Describe("HostLease Controller", func() {
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      "ironic",
-							"provisionState": "available",
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -718,7 +719,7 @@ var _ = Describe("HostLease Controller", func() {
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      "ironic",
-							"provisionState": "available",
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -781,7 +782,7 @@ var _ = Describe("HostLease Controller", func() {
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      "ironic",
-							"provisionState": "available",
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -839,7 +840,7 @@ var _ = Describe("HostLease Controller", func() {
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      "ironic",
-							"provisionState": "available",
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -903,7 +904,7 @@ var _ = Describe("HostLease Controller", func() {
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      "ironic",
-							"provisionState": "available",
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",
@@ -962,8 +963,8 @@ var _ = Describe("HostLease Controller", func() {
 					HostClass:      "ironic-mgmt",
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
-							"managedBy":      "baremetal",
-							"provisionState": "available",
+							"managedBy":      shared.OsacDefaultManagedByValue,
+							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
 					TemplateID: "default",

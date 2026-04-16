@@ -27,6 +27,8 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/baremetal/v1/nodes"
 	"github.com/gophercloud/gophercloud/v2/pagination"
 	"github.com/gophercloud/utils/v2/openstack/clientconfig"
+
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
 var (
@@ -108,9 +110,11 @@ func (c *OpenStackClient) FindFreeHost(ctx context.Context, matchExpressions map
 	if hostType, ok := matchExpressions["hostType"]; ok {
 		listOpts.ResourceClass = hostType
 	}
-	if provisionState, ok := matchExpressions["provisionState"]; ok {
-		listOpts.ProvisionState = nodes.ProvisionState(provisionState)
+	provisionState, ok := matchExpressions["provisionState"]
+	if !ok || provisionState == "" {
+		provisionState = shared.OsacDefaultProvisionStateValue
 	}
+	listOpts.ProvisionState = nodes.ProvisionState(provisionState)
 
 	var foundHost *Host
 	err := nodes.List(c.client, listOpts).EachPage(ctx, func(ctx context.Context, page pagination.Page) (bool, error) {
@@ -144,10 +148,14 @@ func (c *OpenStackClient) FindFreeHost(ctx context.Context, matchExpressions map
 			}
 
 			managedBy, ok := node.Extra[OpenStackLabelManagedByKey].(string)
-			if !ok {
-				managedBy = ""
+			if !ok || managedBy == "" {
+				managedBy = shared.OsacDefaultManagedByValue
 			}
-			if managedBy != matchExpressions["managedBy"] {
+			matchManagedBy, ok := matchExpressions["managedBy"]
+			if !ok || matchManagedBy == "" {
+				matchManagedBy = shared.OsacDefaultManagedByValue
+			}
+			if managedBy != matchManagedBy {
 				continue
 			}
 

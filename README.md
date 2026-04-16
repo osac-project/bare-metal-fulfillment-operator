@@ -53,6 +53,34 @@ The inventory package provides in-memory locking (`inventory.TryLock()` and
 when claiming hosts within a single controller instance. Locks are automatically
 released via deferred unlock calls.
 
+### Profile
+
+The operator provides additional configuration to the BareMetalPool and each
+HostLease's host. Profiles are a collection of workflows to be run when
+BareMetalPool and HostLease are created and deleted.
+
+**Configuration file:** `/etc/osac/profile/profile.yaml` (default)
+
+The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment variable.
+
+**Example:**
+
+```yaml
+- name: imageProvisioning
+  hostSelector:
+    managedBy: baremetal
+    provisionState: available
+  bareMetalPoolTemplate: pool-network
+  hostTemplate: host-image
+```
+
+**Fields:**
+- `name` — name of the profile
+- `hostSelector` — map of key/value pairs that determine which hosts this profile applies to
+- `expectedTemplateParameters` — list of parameter names to validate input template parameters with
+- `bareMetalPoolTemplate` — workflow executed when a BareMetalPool is created and deleted
+- `hostTemplate` — workflow executed when a HostLease is created and deleted
+
 ### Environment Variables
 
 The following environment variables can be used to configure controller behavior:
@@ -60,6 +88,7 @@ The following environment variables can be used to configure controller behavior
 #### Configuration Paths
 
 - **`OSAC_INVENTORY_CONFIG_PATH`** — Path to the inventory configuration file. Default: `/etc/osac/inventory/inventory.yaml`
+- **`OSAC_PROFILE_CONFIG_PATH`** — Path to the profile configuration file. Default: `/etc/osac/profile/profile.yaml`
 
 #### BareMetalPool Controller
 
@@ -69,6 +98,7 @@ The following environment variables can be used to configure controller behavior
 
 - **`OSAC_NO_FREE_HOSTS_POLL_INTERVAL`** — Requeue interval when no free hosts are available in the inventory. Default: `30s`
 - **`OSAC_TRY_LOCK_FAIL_POLL_INTERVAL`** — Requeue interval when lock acquisition fails. Default: `1s`
+- **`OSAC_HOSTLEASE_MAX_CONCURRENT_RECONCILES`** — The maximum amount of times the HostLease reconcile function can run concurrently. Default: `1`
 
 **Example:**
 ```yaml

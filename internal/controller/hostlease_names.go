@@ -19,6 +19,8 @@ package controller
 import (
 	"fmt"
 	"time"
+
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
 const (
@@ -31,5 +33,5 @@ const (
 
 var (
 	// HostLeaseInventoryFinalizer is the finalizer added to HostLease resources for inventory cleanup
-	HostLeaseInventoryFinalizer string = fmt.Sprintf("%s/inventory", osacPrefix)
+	HostLeaseInventoryFinalizer string = fmt.Sprintf("%s/inventory", shared.OsacPrefix)
 )

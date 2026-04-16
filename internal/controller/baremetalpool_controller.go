@@ -37,6 +37,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
 // BareMetalPoolReconciler reconciles a BareMetalPool object
@@ -132,6 +134,32 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
 	}
 
+	var currentProfile *profile.Profile
+	if bareMetalPool.Spec.Profile != nil {
+		profileName := bareMetalPool.Spec.Profile.Name
+		currentProfile = profile.Get(profileName)
+		if currentProfile == nil {
+			log.Info("Profile does not exist", "profile name", profileName)
+			bareMetalPool.SetStatusCondition(
+				v1alpha1.BareMetalPoolConditionTypeReady,
+				metav1.ConditionFalse,
+				"Profile does not exist",
+				v1alpha1.BareMetalPoolReasonFailed,
+			)
+			return ctrl.Result{}, nil
+		}
+		if !currentProfile.ValidateParameters(bareMetalPool.Spec.Profile.TemplateParameters) {
+			log.Info("TemplateParameters do not match the profile's expected parameters")
+			bareMetalPool.SetStatusCondition(
+				v1alpha1.BareMetalPoolConditionTypeReady,
+				metav1.ConditionFalse,
+				"TemplateParameters do not match the profile's expected parameters",
+				v1alpha1.BareMetalPoolReasonFailed,
+			)
+			return ctrl.Result{}, nil
+		}
+	}
+
 	if controllerutil.AddFinalizer(bareMetalPool, BareMetalPoolFinalizer) {
 		if err := r.Update(ctx, bareMetalPool); err != nil {
 			log.Error(err, "Failed to add finalizer")
@@ -203,7 +231,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 			log.Info(fmt.Sprintf("Scaling up: %s (+%d)", hostType, delta))
 			for range delta {
 				log.Info("Creating HostLease", "hostType", hostType)
-				if err := r.createHostLeaseCR(ctx, bareMetalPool, hostType); err != nil {
+				if err := r.createHostLeaseCR(ctx, bareMetalPool, hostType, currentProfile); err != nil {
 					log.Error(err, "Failed to create HostLease CR")
 					bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 					bareMetalPool.SetStatusCondition(
@@ -315,6 +343,7 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 	ctx context.Context,
 	bareMetalPool *v1alpha1.BareMetalPool,
 	hostType string,
+	currentProfile *profile.Profile,
 ) error {
 	log := logf.FromContext(ctx)
 
@@ -325,17 +354,21 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 		HostTypeLabelKey:      hostType, // TODO: should be validated by RFC1123 in the future
 	}
 
-	selector := v1alpha1.HostSelectorSpec{
-		HostSelector: map[string]string{ // TODO: add selectors from profile
-			"managedBy":      "agent",
-			"provisionState": "active",
-		},
-	}
-
 	templateID := "noop"
 	templateParameters := ""
-
-	// TODO: get template info from profile
+	selector := v1alpha1.HostSelectorSpec{
+		HostSelector: map[string]string{
+			"managedBy":      shared.OsacDefaultManagedByValue,
+			"provisionState": shared.OsacDefaultProvisionStateValue,
+		},
+	}
+	if currentProfile != nil {
+		if currentProfile.HostTemplate != "" {
+			templateID = currentProfile.HostTemplate
+		}
+		templateParameters = bareMetalPool.Spec.Profile.TemplateParameters
+		selector.HostSelector = currentProfile.HostSelector
+	}
 
 	hostLeaseCR := &v1alpha1.HostLease{
 		ObjectMeta: metav1.ObjectMeta{

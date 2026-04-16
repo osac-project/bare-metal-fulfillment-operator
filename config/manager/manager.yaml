@@ -97,6 +97,8 @@ spec:
             mountPath: /etc/osac/inventory/
           - name: clouds
             mountPath: /etc/openstack/
+          - name: profiles
+            mountPath: /etc/osac/profile/
       volumes:
         - name: inventory-config
           secret:
@@ -104,5 +106,9 @@ spec:
         - name: clouds
           secret:
             secretName: osac-os-clouds
+        - name: profiles
+          configMap:
+            name: osac-profiles
+            optional: true
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

@@ -50,6 +50,7 @@ type BareMetalPoolSpec struct {
 	// Profile specifies configuration for the bare metal pool, such as setup jobs
 	// and setting additional metadata labels
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
 	Profile *ProfileSpec `json:"profile,omitempty"`
 }
 

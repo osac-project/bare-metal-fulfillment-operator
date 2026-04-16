@@ -14,9 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+// Package shared is a package that defines shared constants
+package shared
 
 const (
-	// osacPrefix is the prefix used to identify osac resources
-	osacPrefix string = "osac.openshift.io"
+	// OsacPrefix is the prefix used to identify osac resources
+	OsacPrefix string = "osac.openshift.io"
+
+	OsacDefaultManagedByValue      = "baremetal"
+	OsacDefaultProvisionStateValue = "available"
 )
