@@ -47,6 +47,7 @@ import (
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/helpers"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
+	"github.com/osac-project/osac-operator/pkg/aap"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -63,10 +64,16 @@ const (
 	// Controller level configuration
 	envInventoryConfigPath = "OSAC_INVENTORY_CONFIG_PATH"
 	envProfileConfigPath   = "OSAC_PROFILE_CONFIG_PATH"
+	envMaxJobHistory       = "OSAC_MAX_JOB_HISTORY"
 
 	envHostDeletionPollInterval = "OSAC_HOST_DELETION_POLL_INTERVAL"
 	envNoFreeHostsPollInterval  = "OSAC_NO_FREE_HOSTS_POLL_INTERVAL"
 	envTryLockFailPollInterval  = "OSAC_TRY_LOCK_FAIL_POLL_INTERVAL"
+
+	envAAPURL                = "OSAC_AAP_URL"
+	envAAPToken              = "OSAC_AAP_TOKEN"
+	envAAPStatusPollInterval = "OSAC_AAP_STATUS_POLL_INTERVAL"
+	envAAPInsecureSkipVerify = "OSAC_AAP_INSECURE_SKIP_VERIFY"
 )
 
 func init() {
@@ -316,15 +323,41 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 		}
 	}
 
+	var aapClient *aap.Client
+	aapURL := helpers.GetEnvWithDefault(envAAPURL, "")
+	aapToken := helpers.GetEnvWithDefault(envAAPToken, "")
+	if aapURL == "" || aapToken == "" {
+		setupLog.Info("AAP configuration not provided, workflow execution will be disabled")
+	} else {
+		aapClient = aap.NewClient(
+			aapURL,
+			aapToken,
+			helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false),
+		)
+	}
+
 	hostDeletionPollIntervalDuration := helpers.GetEnvWithDefault(
 		envHostDeletionPollInterval,
 		controller.DefaultHostDeletionPollIntervalDuration,
 	)
 
+	provisionJobPollIntervalDuration := helpers.GetEnvWithDefault(
+		envAAPStatusPollInterval,
+		controller.DefaultAAPStatusPollIntervalDuration,
+	)
+
+	maxJobHistory := helpers.GetEnvWithDefault(
+		envMaxJobHistory,
+		controller.DefaultMaxJobHistory,
+	)
+
 	if err := controller.NewBareMetalPoolReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
+		aapClient,
 		hostDeletionPollIntervalDuration,
+		provisionJobPollIntervalDuration,
+		maxJobHistory,
 	).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller: %w", err)
 	}

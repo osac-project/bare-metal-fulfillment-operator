@@ -20,6 +20,7 @@ package profile
 import (
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 )
 
@@ -35,6 +36,22 @@ func LoadProfiles(profiles []*Profile) error {
 		}
 		if _, exists := registeredProfiles[profile.Name]; exists {
 			return fmt.Errorf("duplicate profile name: %s", profile.Name)
+		}
+		for key, value := range profile.Labels {
+			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+				return fmt.Errorf("invalid label key '%s' in profile '%s': %v", key, profile.Name, errs)
+			}
+			if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
+				return fmt.Errorf("invalid label value '%s' for key '%s' in profile '%s': %v", value, key, profile.Name, errs)
+			}
+		}
+		for key, value := range profile.PersistentLabels {
+			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+				return fmt.Errorf("invalid persistent label key '%s' in profile '%s': %v", key, profile.Name, errs)
+			}
+			if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
+				return fmt.Errorf("invalid persistent label value '%s' for key '%s' in profile '%s': %v", value, key, profile.Name, errs)
+			}
 		}
 		registeredProfiles[profile.Name] = profile
 	}
@@ -54,6 +71,8 @@ type Profile struct {
 	ExpectedTemplateParameters []string          `yaml:"expectedTemplateParameters"`
 	BareMetalPoolTemplate      string            `yaml:"bareMetalPoolTemplate,omitempty"`
 	HostTemplate               string            `yaml:"hostTemplate,omitempty"`
+	Labels                     map[string]string `yaml:"labels"`
+	PersistentLabels           map[string]string `yaml:"persistentLabels"`
 }
 
 func (p *Profile) ValidateParameters(templateParameters string) bool {

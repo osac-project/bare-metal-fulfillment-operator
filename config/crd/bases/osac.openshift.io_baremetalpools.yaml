@@ -164,6 +164,10 @@ spec:
                   - type
                   type: object
                 type: array
+              desiredConfigVersion:
+                description: DesiredConfigVersion is a hash of the spec, used to detect
+                  spec changes and control retry behavior.
+                type: string
               hostSets:
                 description: HostSets shows the current allocation of hosts
                 items:
@@ -235,6 +239,8 @@ spec:
                       enum:
                       - provision
                       - deprovision
+                      - attach
+                      - detach
                       type: string
                   required:
                   - jobID

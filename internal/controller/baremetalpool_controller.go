@@ -39,30 +39,49 @@ import (
 	"github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
+	opv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
+	"github.com/osac-project/osac-operator/pkg/aap"
+	"github.com/osac-project/osac-operator/pkg/provisioning"
 )
 
 // BareMetalPoolReconciler reconciles a BareMetalPool object
 type BareMetalPoolReconciler struct {
 	client.Client
 	Scheme                           *runtime.Scheme
+	AAPClient                        *aap.Client
 	HostDeletionPollIntervalDuration time.Duration
+	ProvisionJobPollIntervalDuration time.Duration
+	MaxJobHistory                    int
 }
 
 func NewBareMetalPoolReconciler(
 	client client.Client,
 	scheme *runtime.Scheme,
+	aapClient *aap.Client,
 	hostDeletionPollIntervalDuration time.Duration,
+	provisionJobPollIntervalDuration time.Duration,
+	maxJobHistory int,
 ) *BareMetalPoolReconciler {
 
 	if hostDeletionPollIntervalDuration <= 0 {
 		hostDeletionPollIntervalDuration = DefaultHostDeletionPollIntervalDuration
 	}
 
-	return &BareMetalPoolReconciler{
-		Client: client,
-		Scheme: scheme,
+	if provisionJobPollIntervalDuration <= 0 {
+		provisionJobPollIntervalDuration = DefaultAAPStatusPollIntervalDuration
+	}
 
+	if maxJobHistory <= 0 {
+		maxJobHistory = DefaultMaxJobHistory
+	}
+
+	return &BareMetalPoolReconciler{
+		Client:                           client,
+		Scheme:                           scheme,
+		AAPClient:                        aapClient,
 		HostDeletionPollIntervalDuration: hostDeletionPollIntervalDuration,
+		ProvisionJobPollIntervalDuration: provisionJobPollIntervalDuration,
+		MaxJobHistory:                    maxJobHistory,
 	}
 }
 
@@ -93,6 +112,7 @@ func (r *BareMetalPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if !equality.Semantic.DeepEqual(bareMetalPool.Status, *oldstatus) {
+		log.Info("Updating BareMetalPool status")
 		if statusErr := r.Status().Update(ctx, bareMetalPool); client.IgnoreNotFound(statusErr) != nil {
 			return result, statusErr
 		}
@@ -133,6 +153,21 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 	if bareMetalPool.Status.Phase == "" {
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
 	}
+
+	// Compute DesiredConfigVersion from spec
+	desiredConfigVersion, err := provisioning.ComputeDesiredConfigVersion(bareMetalPool.Spec)
+	if err != nil {
+		log.Error(err, "Failed to compute desired config version")
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Failed to compute desired config version",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return ctrl.Result{}, err
+	}
+	bareMetalPool.Status.DesiredConfigVersion = desiredConfigVersion
 
 	var currentProfile *profile.Profile
 	if bareMetalPool.Spec.Profile != nil {
@@ -183,7 +218,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 	// List all HostLease CRs owned by this BareMetalPool
 	log.Info("Retrieving HostLeases")
 	hostLeaseList := &v1alpha1.HostLeaseList{}
-	err := r.List(ctx, hostLeaseList,
+	err = r.List(ctx, hostLeaseList,
 		client.InNamespace(bareMetalPool.Namespace),
 		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
 	)
@@ -270,7 +305,16 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		}
 	}
 
-	// TODO: add profile (setup) logic
+	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.AAPClient != nil {
+		result, err := r.TriggerProvision(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
+		if err != nil {
+			log.Error(err, "Failed to run provisioning lifecycle")
+			return result, err
+		}
+		if !result.IsZero() {
+			return result, nil
+		}
+	}
 
 	bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseReady
 	bareMetalPool.SetStatusCondition(
@@ -297,7 +341,31 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 		v1alpha1.BareMetalPoolReasonDeleting,
 	)
 
-	// TODO: add profile (teardown) logic
+	if bareMetalPool.Status.Jobs == nil {
+		bareMetalPool.Status.Jobs = []opv1alpha1.JobStatus{}
+	}
+
+	// Handle profile teardown workflow if configured
+	var currentProfile *profile.Profile
+	if bareMetalPool.Spec.Profile != nil {
+		profileName := bareMetalPool.Spec.Profile.Name
+		currentProfile = profile.Get(profileName)
+		if currentProfile == nil {
+			log.Info("Profile does not exist during deletion", "profile name", profileName)
+			// Continue with deletion even if profile is not found
+		}
+	}
+
+	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.AAPClient != nil {
+		result, err := r.handleDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
+		if err != nil {
+			return result, err
+		}
+		// If we need to requeue (jobs still running), do so
+		if result.RequeueAfter > 0 {
+			return result, nil
+		}
+	}
 
 	hostLeaseList := &v1alpha1.HostLeaseList{}
 	err := r.List(ctx, hostLeaseList,
@@ -338,6 +406,124 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 	return ctrl.Result{}, nil
 }
 
+// handleDeprovisioning manages the deprovisioning job lifecycle for a BareMetalPool.
+// It triggers deprovisioning if needed and polls job status until completion.
+func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	providerConfig := provisioning.ProviderConfig{
+		ProviderType:        provisioning.ProviderTypeAAP,
+		AAPClient:           r.AAPClient,
+		DeprovisionTemplate: "osac-delete-bare-metal-pool",
+	}
+
+	if bareMetalPool.Annotations == nil {
+		bareMetalPool.Annotations = make(map[string]string)
+	}
+	bareMetalPool.Annotations[BareMetalPoolTemplateIDAnnotationKey] = bareMetalPoolTemplate
+
+	provider, err := provisioning.NewProvider(providerConfig)
+	if err != nil {
+		log.Error(err, "Failed to create deprovisioning provider")
+		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, err
+	}
+
+	// Check if we already have a deprovision job
+	latestDeprovisionJob := provisioning.FindLatestJobByType(bareMetalPool.Status.Jobs, opv1alpha1.JobTypeDeprovision)
+
+	// Trigger deprovisioning - provider decides internally if ready
+	if latestDeprovisionJob == nil || latestDeprovisionJob.JobID == "" {
+		log.Info("Triggering deprovisioning", "provider", provider.Name())
+
+		result, err := provider.TriggerDeprovision(ctx, bareMetalPool)
+		if err != nil {
+			log.Error(err, "Failed to trigger deprovisioning")
+			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+		}
+
+		// Handle provider action
+		switch result.Action {
+		case provisioning.DeprovisionWaiting:
+			log.Info("Deprovisioning not ready, requeueing")
+			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+
+		case provisioning.DeprovisionSkipped:
+			log.Info("Provider skipped deprovisioning")
+			return ctrl.Result{}, nil
+
+		case provisioning.DeprovisionTriggered:
+			newJob := opv1alpha1.JobStatus{
+				JobID:                  result.JobID,
+				Type:                   opv1alpha1.JobTypeDeprovision,
+				Timestamp:              metav1.NewTime(time.Now().UTC()),
+				State:                  opv1alpha1.JobStatePending,
+				Message:                "Deprovisioning job triggered",
+				BlockDeletionOnFailure: result.BlockDeletionOnFailure,
+			}
+			bareMetalPool.Status.Jobs = provisioning.AppendJob(bareMetalPool.Status.Jobs, newJob, r.MaxJobHistory)
+			log.Info("Deprovisioning job triggered", "jobID", result.JobID)
+
+			// Persist the job status immediately to prevent duplicate jobs on crash/restart
+			if statusErr := r.Status().Update(ctx, bareMetalPool); statusErr != nil {
+				log.Error(statusErr, "Failed to persist job status after trigger")
+				return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, statusErr
+			}
+
+			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+
+		default:
+			log.Info("Unexpected deprovision action, requeueing", "action", result.Action)
+			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+		}
+	}
+
+	// We have a job ID, check its status
+	status, err := provider.GetDeprovisionStatus(ctx, bareMetalPool, latestDeprovisionJob.JobID)
+	if err != nil {
+		log.Error(err, "Failed to get deprovision job status", "jobID", latestDeprovisionJob.JobID)
+		updatedJob := *latestDeprovisionJob
+		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
+		provisioning.UpdateJob(bareMetalPool.Status.Jobs, updatedJob)
+		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+	}
+
+	// Update job status
+	updatedJob := *latestDeprovisionJob
+	updatedJob.State = status.State
+	updatedJob.Message = status.MessageWithDetails()
+	provisioning.UpdateJob(bareMetalPool.Status.Jobs, updatedJob)
+
+	// If job is still running, requeue
+	if !status.State.IsTerminal() {
+		log.Info("Deprovision job still running", "jobID", latestDeprovisionJob.JobID, "state", status.State)
+		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+	}
+
+	// Job reached terminal state (Succeeded, Failed, or Canceled)
+	if status.State.IsSuccessful() {
+		log.Info("Deprovision job succeeded", "jobID", latestDeprovisionJob.JobID)
+		return ctrl.Result{}, nil
+	}
+
+	// Job failed or was canceled
+	// Check policy stored in job status
+	if latestDeprovisionJob.BlockDeletionOnFailure {
+		// Block deletion to prevent orphaned resources
+		log.Info("Deprovision job failed, blocking deletion to prevent orphaned resources",
+			"jobID", latestDeprovisionJob.JobID,
+			"state", status.State,
+			"message", updatedJob.Message)
+		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
+	} else {
+		// Allow process to continue
+		log.Info("Deprovision job did not succeed, allowing process to continue",
+			"jobID", latestDeprovisionJob.JobID,
+			"state", status.State,
+			"message", updatedJob.Message)
+		return ctrl.Result{}, nil
+	}
+}
+
 // createHostLeaseCR creates a new HostLease CR owned by this BareMetalPool
 func (r *BareMetalPoolReconciler) createHostLeaseCR(
 	ctx context.Context,
@@ -370,6 +556,19 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 		selector.HostSelector = currentProfile.HostSelector
 	}
 
+	// Prepare inventory labels from profile
+	var inventoryLabels map[string]string
+	var inventoryPersistentLabels map[string]string
+
+	if currentProfile != nil {
+		if len(currentProfile.Labels) > 0 {
+			inventoryLabels = currentProfile.Labels
+		}
+		if len(currentProfile.PersistentLabels) > 0 {
+			inventoryPersistentLabels = currentProfile.PersistentLabels
+		}
+	}
+
 	hostLeaseCR := &v1alpha1.HostLease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      hostLeaseName,
@@ -377,13 +576,15 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 			Labels:    labels,
 		},
 		Spec: v1alpha1.HostLeaseSpec{
-			HostType:           hostType,
-			ExternalHostID:     "",
-			ExternalHostName:   "",
-			Selector:           selector,
-			TemplateID:         templateID,
-			TemplateParameters: templateParameters,
-			PoweredOn:          ptr.To(false),
+			HostType:                  hostType,
+			ExternalHostID:            "",
+			ExternalHostName:          "",
+			Selector:                  selector,
+			InventoryLabels:           inventoryLabels,
+			InventoryPersistentLabels: inventoryPersistentLabels,
+			TemplateID:                templateID,
+			TemplateParameters:        templateParameters,
+			PoweredOn:                 ptr.To(false),
 		},
 	}
 	if err := controllerutil.SetControllerReference(bareMetalPool, hostLeaseCR, r.Scheme); err != nil {
@@ -397,6 +598,77 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 
 	log.Info("Created HostLease CR", "hostLease", hostLeaseName)
 	return nil
+}
+
+func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	providerConfig := provisioning.ProviderConfig{
+		ProviderType:      provisioning.ProviderTypeAAP,
+		AAPClient:         r.AAPClient,
+		ProvisionTemplate: "osac-create-bare-metal-pool",
+	}
+
+	provider, err := provisioning.NewProvider(providerConfig)
+	if err != nil {
+		log.Error(err, "Failed to create provisioning provider")
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Failed to create provisioning provider",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return ctrl.Result{}, err
+	}
+
+	if bareMetalPool.Status.Jobs == nil {
+		bareMetalPool.Status.Jobs = []opv1alpha1.JobStatus{}
+	}
+
+	if bareMetalPool.Annotations == nil {
+		bareMetalPool.Annotations = make(map[string]string)
+	}
+	bareMetalPool.Annotations[BareMetalPoolTemplateIDAnnotationKey] = bareMetalPoolTemplate
+
+	return provisioning.RunProvisioningLifecycle(
+		ctx,
+		provider,
+		bareMetalPool,
+		&provisioning.State{
+			Jobs:                 &bareMetalPool.Status.Jobs,
+			DesiredConfigVersion: bareMetalPool.Status.DesiredConfigVersion,
+		},
+		r.MaxJobHistory,
+		r.ProvisionJobPollIntervalDuration,
+		&provisioning.PollCallbacks{
+			OnFailed: func(message string) {
+				bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+				bareMetalPool.SetStatusCondition(
+					v1alpha1.BareMetalPoolConditionTypeReady,
+					metav1.ConditionFalse,
+					message,
+					v1alpha1.BareMetalPoolReasonFailed,
+				)
+			},
+			OnSuccess: func(_ provisioning.ProvisionStatus) {
+				log.Info("Provision workflow completed successfully")
+			},
+		},
+		func() bool {
+			// Check API server for non-terminal provision job to prevent duplicates
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(
+				ctx,
+				r.Client,
+				client.ObjectKeyFromObject(bareMetalPool),
+				&v1alpha1.BareMetalPool{},
+			)
+		},
+		func() error {
+			// Flush status after job trigger to prevent duplicate jobs
+			return r.Status().Update(ctx, bareMetalPool)
+		},
+	)
 }
 
 // updateStatusHostSets updates status.HostSets from the current host leases map.
@@ -413,5 +685,6 @@ func (r *BareMetalPoolReconciler) updateStatusHostSets(bareMetalPool *v1alpha1.B
 	sort.Slice(updatedHostSets, func(i, j int) bool {
 		return updatedHostSets[i].HostType < updatedHostSets[j].HostType
 	})
+
 	bareMetalPool.Status.HostSets = updatedHostSets
 }

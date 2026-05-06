@@ -248,6 +248,20 @@ func (in *HostLeaseList) DeepCopyObject() runtime.Object {
 func (in *HostLeaseSpec) DeepCopyInto(out *HostLeaseSpec) {
 	*out = *in
 	in.Selector.DeepCopyInto(&out.Selector)
+	if in.InventoryLabels != nil {
+		in, out := &in.InventoryLabels, &out.InventoryLabels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.InventoryPersistentLabels != nil {
+		in, out := &in.InventoryPersistentLabels, &out.InventoryPersistentLabels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.PoweredOn != nil {
 		in, out := &in.PoweredOn, &out.PoweredOn
 		*out = new(bool)

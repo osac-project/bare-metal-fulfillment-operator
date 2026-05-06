@@ -46,6 +46,17 @@ type HostLeaseSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
 	Selector HostSelectorSpec `json:"selector,omitempty"`
+	// InventoryLabels are labels to be applied to the host in the inventory system.
+	// These labels are non-persistent and will be removed when the HostLease is deleted.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
+	InventoryLabels map[string]string `json:"inventorylabels,omitempty"`
+	// InventoryPersistentLabels are labels to be applied to the host in the inventory system.
+	// These labels are persistent and will remain on the host after the HostLease is deleted.
+	// Persistent labels override InventoryLabels with the same key.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
+	InventoryPersistentLabels map[string]string `json:"inventorypersistentlabels,omitempty"`
 	// TemplateID is the unique identifier of the host template to use.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Type=string
@@ -198,6 +209,9 @@ type HostLeaseStatus struct {
 	// Conditions holds an array of metav1.Condition describing host state.
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+	// DesiredConfigVersion is a hash of the spec, used to detect spec changes and control retry behavior.
+	// +kubebuilder:validation:Optional
+	DesiredConfigVersion string `json:"desiredConfigVersion,omitempty"`
 	// PoweredOn is the current power state.
 	PoweredOn *bool `json:"poweredOn,omitempty"`
 	// NetworkInterfaces lists the host's network interfaces (from inventory or observed).

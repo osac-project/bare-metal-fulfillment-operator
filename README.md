@@ -55,9 +55,11 @@ released via deferred unlock calls.
 
 ### Profile
 
-The operator provides additional configuration to the BareMetalPool and each
-HostLease's host. Profiles are a collection of workflows to be run when
-BareMetalPool and HostLease are created and deleted.
+The operator provides host selection via labels (hostSelector) and additional
+configuration to the BareMetalPool and each HostLease's host. Profiles are a
+collection of workflows to be run when BareMetalPool and HostLease are created
+and deleted. The inventory hosts that get selected by the profile will be
+marked with profile labels in their backend.
 
 **Configuration file:** `/etc/osac/profile/profile.yaml` (default)
 
@@ -66,12 +68,17 @@ The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment varia
 **Example:**
 
 ```yaml
-- name: imageProvisioning
+- name: agentProvisioning
   hostSelector:
     managedBy: baremetal
     provisionState: available
-  bareMetalPoolTemplate: pool-network
-  hostTemplate: host-image
+  bareMetalPoolTemplate: private_network
+  hostTemplate: agent_provision
+  labels:
+    profileName: agentProvisioning
+  persistentLabels:
+    managedBy: agent
+    provisionState: active
 ```
 
 **Fields:**
@@ -80,6 +87,8 @@ The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment varia
 - `expectedTemplateParameters` — list of parameter names to validate input template parameters with
 - `bareMetalPoolTemplate` — workflow executed when a BareMetalPool is created and deleted
 - `hostTemplate` — workflow executed when a HostLease is created and deleted
+- `labels` — labels to be applied in the inventory that will get deleted when the host's HostLease gets deleted
+- `persistentLabels` — labels to be applied in the inventory that won't get deleted when the host's HostLease gets deleted
 
 ### Environment Variables
 
@@ -89,6 +98,13 @@ The following environment variables can be used to configure controller behavior
 
 - **`OSAC_INVENTORY_CONFIG_PATH`** — Path to the inventory configuration file. Default: `/etc/osac/inventory/inventory.yaml`
 - **`OSAC_PROFILE_CONFIG_PATH`** — Path to the profile configuration file. Default: `/etc/osac/profile/profile.yaml`
+
+#### AAP Provisioning Provider
+
+- **`OSAC_AAP_URL`** — AAP server URL (required).
+- **`OSAC_AAP_TOKEN`** — AAP authentication token (required).
+- **`OSAC_AAP_INSECURE_SKIP_VERIFY`** — skip TLS verification for AAP (default: `false`).
+- **`OSAC_AAP_STATUS_POLL_INTERVAL`** — job status polling interval (default: `10s`). Duration string, e.g. `30s`, `1m`.
 
 #### BareMetalPool Controller
 

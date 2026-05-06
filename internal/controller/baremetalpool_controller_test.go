@@ -106,11 +106,16 @@ var _ = Describe("BareMetalPool Controller", func() {
 		testNamespace = "default"
 		mockK8sClient = &mockClient{Client: k8sClient}
 		hostDeletionPollIntervalDuration := DefaultHostDeletionPollIntervalDuration
+		provisionJobPollIntervalDuration := DefaultAAPStatusPollIntervalDuration
+		maxJobHistory := DefaultMaxJobHistory
 
 		reconciler = NewBareMetalPoolReconciler(
 			mockK8sClient,
 			k8sClient.Scheme(),
+			nil, // workflowClient - not needed for basic tests
 			hostDeletionPollIntervalDuration,
+			provisionJobPollIntervalDuration,
+			maxJobHistory,
 		)
 	})
 

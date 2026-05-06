@@ -26,6 +26,12 @@ import (
 const (
 	// DefaultHostDeletionPollInterval is the default interval for polling host deletion status
 	DefaultHostDeletionPollIntervalDuration = 5 * time.Second
+
+	// DefaultProvisionJobPollInterval is the default interval for polling provision job status
+	DefaultAAPStatusPollIntervalDuration = 10 * time.Second
+
+	// DefaultMaxJobHistory is the default maximum number of job history entries to retain
+	DefaultMaxJobHistory = 10
 )
 
 var (
@@ -37,4 +43,7 @@ var (
 
 	// hostTypeLabelKey is the label key used to identify the host type
 	HostTypeLabelKey string = fmt.Sprintf("%s/host-type", shared.OsacPrefix)
+
+	// BareMetalPoolTemplateIDAnnotationKey is the annotation key used to store the BareMetalPool template ID
+	BareMetalPoolTemplateIDAnnotationKey string = fmt.Sprintf("%s/templateID", shared.OsacPrefix)
 )

@@ -198,12 +198,26 @@ func (r *HostLeaseReconciler) handleUpdate(ctx context.Context, hostLease *v1alp
 	}
 	defer inventory.Unlock(hostID)
 
+	// Build combined labels from spec fields
+	// Persistent labels override non-persistent labels with the same key
+	combinedLabels := make(map[string]string)
+
+	// First, copy inventory labels
+	if hostLease.Spec.InventoryLabels != nil {
+		maps.Copy(combinedLabels, hostLease.Spec.InventoryLabels)
+	}
+
+	// Then copy persistent labels (will override any duplicates)
+	if hostLease.Spec.InventoryPersistentLabels != nil {
+		maps.Copy(combinedLabels, hostLease.Spec.InventoryPersistentLabels)
+	}
+
 	inventoryHost, err := r.InventoryClient.AssignHost(
 		ctx,
 		hostLease.Spec.ExternalHostID,
 		poolID,
 		string(hostLease.UID),
-		nil, // labels
+		combinedLabels,
 	)
 	if err != nil {
 		log.Error(err, "Failed to assign host", "InventoryHostID", hostLease.Spec.ExternalHostID)
@@ -258,7 +272,16 @@ func (r *HostLeaseReconciler) handleDeletion(ctx context.Context, hostLease *v1a
 		}
 		defer inventory.Unlock(hostID)
 
-		err := r.InventoryClient.UnassignHost(ctx, hostID, nil)
+		// Collect non-persistent inventory labels to remove
+		var labelsToRemove []string
+		if hostLease.Spec.InventoryLabels != nil {
+			labelsToRemove = make([]string, 0, len(hostLease.Spec.InventoryLabels))
+			for key := range hostLease.Spec.InventoryLabels {
+				labelsToRemove = append(labelsToRemove, key)
+			}
+		}
+
+		err := r.InventoryClient.UnassignHost(ctx, hostID, labelsToRemove)
 		if err != nil {
 			log.Error(err, "Failed to unassign host in inventory")
 			return ctrl.Result{}, err

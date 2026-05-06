@@ -76,6 +76,10 @@ type BareMetalPoolStatus struct {
 	// +kubebuilder:validation:Optional
 	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
 
+	// DesiredConfigVersion is a hash of the spec, used to detect spec changes and control retry behavior.
+	// +kubebuilder:validation:Optional
+	DesiredConfigVersion string `json:"desiredConfigVersion,omitempty"`
+
 	// Conditions represent the latest available observations of the BareMetalPool state
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
