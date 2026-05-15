@@ -115,5 +115,5 @@ spec:
           configMap:
             name: osac-profiles
             optional: true
-      serviceAccountName: controller-manager
+      serviceAccountName: bmf-controller-manager
       terminationGracePeriodSeconds: 10
