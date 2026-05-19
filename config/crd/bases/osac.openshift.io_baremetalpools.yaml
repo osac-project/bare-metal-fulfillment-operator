@@ -254,6 +254,10 @@ spec:
                   updated
                 format: date-time
                 type: string
+              networkClass:
+                description: NetworkClass specifies the network class to use for this
+                  pool
+                type: string
               phase:
                 description: Phase provides a single-value overview of the state of
                   the BareMetalPool

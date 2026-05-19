@@ -255,12 +255,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := setupBareMetalPoolController(mgr); err != nil {
+	// Read and parse inventory configuration
+	inventoryConfigPath := helpers.GetEnvWithDefault(envInventoryConfigPath, "/etc/osac/inventory/inventory.yaml")
+	inventoryConfigData, err := os.ReadFile(inventoryConfigPath)
+	if err != nil {
+		setupLog.Error(err, "failed to read inventory config file")
+		os.Exit(1)
+	}
+
+	var inventoryConfig inventory.Config
+	if err := yaml.Unmarshal(inventoryConfigData, &inventoryConfig); err != nil {
+		setupLog.Error(err, "failed to parse inventory config")
+		os.Exit(1)
+	}
+
+	if err := setupBareMetalPoolController(mgr, &inventoryConfig); err != nil {
 		setupLog.Error(err, "unable to setup controller", "controller", "BareMetalPool")
 		os.Exit(1)
 	}
 
-	if err := setupHostLeaseController(ctx, mgr); err != nil {
+	if err := setupHostLeaseController(ctx, mgr, &inventoryConfig); err != nil {
 		setupLog.Error(err, "unable to setup controller", "controller", "HostLease")
 		os.Exit(1)
 	}
@@ -299,7 +313,7 @@ func main() {
 }
 
 // setupBareMetalPoolController registers the BareMetalPool controller.
-func setupBareMetalPoolController(mgr ctrl.Manager) error {
+func setupBareMetalPoolController(mgr ctrl.Manager, inventoryConfig *inventory.Config) error {
 	// Load profile configuration
 	profileConfigPath := helpers.GetEnvWithDefault(
 		envProfileConfigPath,
@@ -378,6 +392,7 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 		hostDeletionPollIntervalDuration,
 		provisionJobPollIntervalDuration,
 		maxJobHistory,
+		inventoryConfig.NetworkClass,
 	).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller: %w", err)
 	}
@@ -386,20 +401,8 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 }
 
 // setupHostLeaseController registers the HostLease controller.
-func setupHostLeaseController(ctx context.Context, mgr ctrl.Manager) error {
-	// Read and parse inventory configuration
-	inventoryConfigPath := helpers.GetEnvWithDefault(envInventoryConfigPath, "/etc/osac/inventory/inventory.yaml")
-	inventoryConfigData, err := os.ReadFile(inventoryConfigPath)
-	if err != nil {
-		return fmt.Errorf("failed to read inventory config file: %w", err)
-	}
-
-	var inventoryConfig inventory.Config
-	if err := yaml.Unmarshal(inventoryConfigData, &inventoryConfig); err != nil {
-		return fmt.Errorf("failed to parse inventory config: %w", err)
-	}
-
-	inventoryClient, err := inventory.NewClient(ctx, &inventoryConfig)
+func setupHostLeaseController(ctx context.Context, mgr ctrl.Manager, inventoryConfig *inventory.Config) error {
+	inventoryClient, err := inventory.NewClient(ctx, inventoryConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create inventory client: %w", err)
 	}
