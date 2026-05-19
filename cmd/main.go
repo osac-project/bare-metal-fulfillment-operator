@@ -48,6 +48,7 @@ import (
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
 	"github.com/osac-project/osac-operator/pkg/aap"
+	"github.com/osac-project/osac-operator/pkg/provisioning"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -74,6 +75,7 @@ const (
 	envAAPToken              = "OSAC_AAP_TOKEN"
 	envAAPStatusPollInterval = "OSAC_AAP_STATUS_POLL_INTERVAL"
 	envAAPInsecureSkipVerify = "OSAC_AAP_INSECURE_SKIP_VERIFY"
+	envAAPTemplatePrefix     = "OSAC_AAP_TEMPLATE_PREFIX"
 )
 
 func init() {
@@ -323,17 +325,35 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 		}
 	}
 
-	var aapClient *aap.Client
+	var provider provisioning.ProvisioningProvider
 	aapURL := helpers.GetEnvWithDefault(envAAPURL, "")
 	aapToken := helpers.GetEnvWithDefault(envAAPToken, "")
 	if aapURL == "" || aapToken == "" {
 		setupLog.Info("AAP configuration not provided, workflow execution will be disabled")
 	} else {
-		aapClient = aap.NewClient(
+		aapClient := aap.NewClient(
 			aapURL,
 			aapToken,
 			helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false),
 		)
+
+		templatePrefix := helpers.GetEnvWithDefault(
+			envAAPTemplatePrefix,
+			"osac",
+		)
+
+		providerConfig := provisioning.ProviderConfig{
+			ProviderType:   provisioning.ProviderTypeAAP,
+			AAPClient:      aapClient,
+			TemplatePrefix: templatePrefix,
+		}
+
+		var err error
+		provider, err = provisioning.NewProvider(providerConfig)
+		if err != nil {
+			setupLog.Error(err, "Failed to create AAP provider")
+			return err
+		}
 	}
 
 	hostDeletionPollIntervalDuration := helpers.GetEnvWithDefault(
@@ -354,7 +374,7 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 	if err := controller.NewBareMetalPoolReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		aapClient,
+		provider,
 		hostDeletionPollIntervalDuration,
 		provisionJobPollIntervalDuration,
 		maxJobHistory,

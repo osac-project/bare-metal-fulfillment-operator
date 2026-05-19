@@ -112,7 +112,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 		reconciler = NewBareMetalPoolReconciler(
 			mockK8sClient,
 			k8sClient.Scheme(),
-			nil, // workflowClient - not needed for basic tests
+			nil, // provider - not needed for basic tests
 			hostDeletionPollIntervalDuration,
 			provisionJobPollIntervalDuration,
 			maxJobHistory,

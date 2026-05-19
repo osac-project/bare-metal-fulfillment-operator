@@ -40,7 +40,6 @@ import (
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 	opv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
-	"github.com/osac-project/osac-operator/pkg/aap"
 	"github.com/osac-project/osac-operator/pkg/provisioning"
 )
 
@@ -48,16 +47,16 @@ import (
 type BareMetalPoolReconciler struct {
 	client.Client
 	Scheme                           *runtime.Scheme
-	AAPClient                        *aap.Client
 	HostDeletionPollIntervalDuration time.Duration
 	ProvisionJobPollIntervalDuration time.Duration
 	MaxJobHistory                    int
+	provider                         provisioning.ProvisioningProvider
 }
 
 func NewBareMetalPoolReconciler(
 	client client.Client,
 	scheme *runtime.Scheme,
-	aapClient *aap.Client,
+	provider provisioning.ProvisioningProvider,
 	hostDeletionPollIntervalDuration time.Duration,
 	provisionJobPollIntervalDuration time.Duration,
 	maxJobHistory int,
@@ -78,10 +77,10 @@ func NewBareMetalPoolReconciler(
 	return &BareMetalPoolReconciler{
 		Client:                           client,
 		Scheme:                           scheme,
-		AAPClient:                        aapClient,
 		HostDeletionPollIntervalDuration: hostDeletionPollIntervalDuration,
 		ProvisionJobPollIntervalDuration: provisionJobPollIntervalDuration,
 		MaxJobHistory:                    maxJobHistory,
+		provider:                         provider,
 	}
 }
 
@@ -305,7 +304,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		}
 	}
 
-	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.AAPClient != nil {
+	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
 		result, err := r.TriggerProvision(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
 		if err != nil {
 			log.Error(err, "Failed to run provisioning lifecycle")
@@ -356,7 +355,7 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 		}
 	}
 
-	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.AAPClient != nil {
+	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
 		result, err := r.handleDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
 		if err != nil {
 			return result, err
@@ -411,31 +410,19 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	providerConfig := provisioning.ProviderConfig{
-		ProviderType:        provisioning.ProviderTypeAAP,
-		AAPClient:           r.AAPClient,
-		DeprovisionTemplate: "osac-delete-bare-metal-pool",
-	}
-
 	if bareMetalPool.Annotations == nil {
 		bareMetalPool.Annotations = make(map[string]string)
 	}
 	bareMetalPool.Annotations[BareMetalPoolTemplateIDAnnotationKey] = bareMetalPoolTemplate
-
-	provider, err := provisioning.NewProvider(providerConfig)
-	if err != nil {
-		log.Error(err, "Failed to create deprovisioning provider")
-		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, err
-	}
 
 	// Check if we already have a deprovision job
 	latestDeprovisionJob := provisioning.FindLatestJobByType(bareMetalPool.Status.Jobs, opv1alpha1.JobTypeDeprovision)
 
 	// Trigger deprovisioning - provider decides internally if ready
 	if latestDeprovisionJob == nil || latestDeprovisionJob.JobID == "" {
-		log.Info("Triggering deprovisioning", "provider", provider.Name())
+		log.Info("Triggering deprovisioning", "provider", r.provider.Name())
 
-		result, err := provider.TriggerDeprovision(ctx, bareMetalPool)
+		result, err := r.provider.TriggerDeprovision(ctx, bareMetalPool)
 		if err != nil {
 			log.Error(err, "Failed to trigger deprovisioning")
 			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
@@ -478,7 +465,7 @@ func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bare
 	}
 
 	// We have a job ID, check its status
-	status, err := provider.GetDeprovisionStatus(ctx, bareMetalPool, latestDeprovisionJob.JobID)
+	status, err := r.provider.GetDeprovisionStatus(ctx, bareMetalPool, latestDeprovisionJob.JobID)
 	if err != nil {
 		log.Error(err, "Failed to get deprovision job status", "jobID", latestDeprovisionJob.JobID)
 		updatedJob := *latestDeprovisionJob
@@ -603,25 +590,6 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	providerConfig := provisioning.ProviderConfig{
-		ProviderType:      provisioning.ProviderTypeAAP,
-		AAPClient:         r.AAPClient,
-		ProvisionTemplate: "osac-create-bare-metal-pool",
-	}
-
-	provider, err := provisioning.NewProvider(providerConfig)
-	if err != nil {
-		log.Error(err, "Failed to create provisioning provider")
-		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
-		bareMetalPool.SetStatusCondition(
-			v1alpha1.BareMetalPoolConditionTypeReady,
-			metav1.ConditionFalse,
-			"Failed to create provisioning provider",
-			v1alpha1.BareMetalPoolReasonFailed,
-		)
-		return ctrl.Result{}, err
-	}
-
 	if bareMetalPool.Status.Jobs == nil {
 		bareMetalPool.Status.Jobs = []opv1alpha1.JobStatus{}
 	}
@@ -633,7 +601,7 @@ func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMeta
 
 	return provisioning.RunProvisioningLifecycle(
 		ctx,
-		provider,
+		r.provider,
 		bareMetalPool,
 		&provisioning.State{
 			Jobs:                 &bareMetalPool.Status.Jobs,
