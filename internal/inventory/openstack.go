@@ -39,9 +39,10 @@ var (
 const (
 	OSACPrefix = "osac_"
 
-	OpenStackBareMetalPoolIDKey     = OSACPrefix + "poolId"
-	OpenStackBareMetalPoolHostIDKey = OSACPrefix + "hostId"
-	OpenStackLabelManagedByKey      = OSACPrefix + "managedBy"
+	// Label keys within osac_labels map
+	PoolIDLabel    = "poolId"
+	HostIDLabel    = "hostId"
+	ManagedByLabel = "managedBy"
 )
 
 func init() {
@@ -133,21 +134,16 @@ func (c *OpenStackClient) FindFreeHost(ctx context.Context, matchExpressions map
 		})
 
 		for _, node := range nodes {
-			poolID, ok := node.Extra[OpenStackBareMetalPoolIDKey].(string)
-			if !ok {
-				poolID = ""
-			}
-
-			hostID, ok := node.Extra[OpenStackBareMetalPoolHostIDKey].(string)
-			if !ok {
-				hostID = ""
-			}
+			// Check if host is already assigned by looking for poolId or hostId labels
+			poolID, _ := getNestedLabel(node, PoolIDLabel)
+			hostID, _ := getNestedLabel(node, HostIDLabel)
 
 			if poolID != "" || hostID != "" {
 				continue
 			}
 
-			managedBy, ok := node.Extra[OpenStackLabelManagedByKey].(string)
+			// Get managedBy label, defaulting to standard value if not set
+			managedBy, ok := getNestedLabel(node, ManagedByLabel)
 			if !ok || managedBy == "" {
 				managedBy = shared.OsacDefaultManagedByValue
 			}
@@ -188,48 +184,52 @@ func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string
 		return nil, err
 	}
 
-	currentBareMetalPoolID, ok := node.Extra[OpenStackBareMetalPoolIDKey].(string)
+	currentBareMetalPoolID, ok := getNestedLabel(node, PoolIDLabel)
 	if ok && currentBareMetalPoolID != "" && currentBareMetalPoolID != poolID {
 		return nil, nil
 	}
 
-	currentBareMetalPoolHostID, ok := node.Extra[OpenStackBareMetalPoolHostIDKey].(string)
+	currentBareMetalPoolHostID, ok := getNestedLabel(node, HostIDLabel)
 	if ok && currentBareMetalPoolHostID != "" && currentBareMetalPoolHostID != hostID {
 		return nil, nil
 	}
 
-	updateOpts := make(nodes.UpdateOpts, 0, 3+len(labels))
+	// Ensure /extra/osac_labels exists before adding any labels
+	if _, ok := node.Extra["osac_labels"]; !ok {
+		initOpts := make(nodes.UpdateOpts, 0, 1)
+		initOpts = append(initOpts, nodes.UpdateOperation{
+			Op:    nodes.AddOp,
+			Path:  "/extra/osac_labels",
+			Value: map[string]interface{}{},
+		})
+		_, err = nodes.Update(ctx, c.client, inventoryHostID, initOpts).Extract()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Add poolId, hostId, and user labels to osac_labels
+	updateOpts := make(nodes.UpdateOpts, 0, 2+len(labels))
 	updateOpts = append(updateOpts,
 		nodes.UpdateOperation{
 			Op:    nodes.AddOp,
-			Path:  "/extra/" + OpenStackBareMetalPoolIDKey,
+			Path:  "/extra/osac_labels/" + escapeJSONPointerToken(PoolIDLabel),
 			Value: poolID,
 		},
 		nodes.UpdateOperation{
 			Op:    nodes.AddOp,
-			Path:  "/extra/" + OpenStackBareMetalPoolHostIDKey,
+			Path:  "/extra/osac_labels/" + escapeJSONPointerToken(HostIDLabel),
 			Value: hostID,
 		},
 	)
 
-	// Ensure /extra/osac_labels exists before adding individual label keys
-	if len(labels) > 0 {
-		// Check if osac_labels already exists in node.Extra
-		if _, hasLabels := node.Extra["osac_labels"]; !hasLabels {
-			updateOpts = append(updateOpts, nodes.UpdateOperation{
-				Op:    nodes.AddOp,
-				Path:  "/extra/osac_labels",
-				Value: map[string]interface{}{},
-			})
-		}
-
-		for labelKey, labelValue := range labels {
-			updateOpts = append(updateOpts, nodes.UpdateOperation{
-				Op:    nodes.AddOp,
-				Path:  "/extra/osac_labels/" + escapeJSONPointerToken(labelKey),
-				Value: labelValue,
-			})
-		}
+	// Add additional profile labels
+	for labelKey, labelValue := range labels {
+		updateOpts = append(updateOpts, nodes.UpdateOperation{
+			Op:    nodes.AddOp,
+			Path:  "/extra/osac_labels/" + escapeJSONPointerToken(labelKey),
+			Value: labelValue,
+		})
 	}
 
 	node, err = nodes.Update(ctx, c.client, inventoryHostID, updateOpts).Extract()
@@ -237,9 +237,9 @@ func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string
 		return nil, err
 	}
 
-	managedBy, ok := node.Extra[OpenStackLabelManagedByKey].(string)
+	managedBy, ok := getNestedLabel(node, ManagedByLabel)
 	if !ok {
-		managedBy = ""
+		managedBy = shared.OsacDefaultManagedByValue
 	}
 
 	return &Host{
@@ -256,46 +256,57 @@ func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string
 }
 
 func (c *OpenStackClient) UnassignHost(ctx context.Context, inventoryHostID string, labels []string) error {
-	updateOpts := make(nodes.UpdateOpts, 0, 2+len(labels))
-	updateOpts = append(updateOpts,
-		nodes.UpdateOperation{
-			Op:    nodes.ReplaceOp,
-			Path:  "/extra/" + OpenStackBareMetalPoolIDKey,
-			Value: "",
-		},
-		nodes.UpdateOperation{
-			Op:    nodes.ReplaceOp,
-			Path:  "/extra/" + OpenStackBareMetalPoolHostIDKey,
-			Value: "",
-		},
-	)
-	if len(labels) > 0 {
-		node, err := nodes.Get(ctx, c.client, inventoryHostID).Extract()
-		if err != nil {
-			return err
-		}
-
-		existing, _ := node.Extra["osac_labels"].(map[string]any)
-		if existing == nil {
-			existing = make(map[string]any)
-		}
-
-		for _, label := range labels {
-			if _, ok := existing[label]; !ok {
-				continue
-			}
-			updateOpts = append(updateOpts, nodes.UpdateOperation{
-				Op:   nodes.RemoveOp,
-				Path: "/extra/osac_labels/" + escapeJSONPointerToken(label),
-			})
-		}
+	// Get current node state to check what labels exist
+	node, err := nodes.Get(ctx, c.client, inventoryHostID).Extract()
+	if err != nil {
+		return err
 	}
 
-	_, err := nodes.Update(ctx, c.client, inventoryHostID, updateOpts).Extract()
+	existing, _ := node.Extra["osac_labels"].(map[string]any)
+	if existing == nil {
+		existing = make(map[string]any)
+	}
+
+	// Build list of labels to remove: poolId, hostId, and user-provided labels
+	// Note: managedBy is kept as a persistent label
+	labelsToRemove := make([]string, 2, 2+len(labels))
+	labelsToRemove[0] = PoolIDLabel
+	labelsToRemove[1] = HostIDLabel
+	labelsToRemove = append(labelsToRemove, labels...)
+
+	updateOpts := make(nodes.UpdateOpts, 0, len(labelsToRemove))
+	for _, label := range labelsToRemove {
+		// Only remove if the label exists
+		if _, ok := existing[label]; !ok {
+			continue
+		}
+		updateOpts = append(updateOpts, nodes.UpdateOperation{
+			Op:   nodes.RemoveOp,
+			Path: "/extra/osac_labels/" + escapeJSONPointerToken(label),
+		})
+	}
+
+	// If no labels to remove, nothing to do
+	if len(updateOpts) == 0 {
+		return nil
+	}
+
+	_, err = nodes.Update(ctx, c.client, inventoryHostID, updateOpts).Extract()
 	return err
 }
 
 func escapeJSONPointerToken(s string) string {
 	s = strings.ReplaceAll(s, "~", "~0")
 	return strings.ReplaceAll(s, "/", "~1")
+}
+
+// getNestedLabel retrieves a label value from node.Extra["osac_labels"][labelKey]
+// Returns the value as a string and a boolean indicating if it was found
+func getNestedLabel(node *nodes.Node, labelKey string) (string, bool) {
+	if labelsMap, ok := node.Extra["osac_labels"].(map[string]interface{}); ok {
+		if value, ok := labelsMap[labelKey].(string); ok {
+			return value, true
+		}
+	}
+	return "", false
 }
