@@ -234,6 +234,7 @@ func (r *HostLeaseReconciler) handleUpdate(ctx context.Context, hostLease *v1alp
 	}
 
 	hostLease.Spec.HostClass = inventoryHost.HostClass
+	hostLease.Spec.NetworkClass = inventoryHost.NetworkClass
 	if err = r.Update(ctx, hostLease); err != nil {
 		log.Error(err, "Failed to update HostLease CR with HostClass", "HostClass", inventoryHost.HostClass)
 		return ctrl.Result{}, err
