@@ -343,28 +343,6 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 		bareMetalPool.Status.Jobs = []opv1alpha1.JobStatus{}
 	}
 
-	// Handle profile teardown workflow if configured
-	var currentProfile *profile.Profile
-	if bareMetalPool.Spec.Profile != nil {
-		profileName := bareMetalPool.Spec.Profile.Name
-		currentProfile = profile.Get(profileName)
-		if currentProfile == nil {
-			log.Info("Profile does not exist during deletion", "profile name", profileName)
-			// Continue with deletion even if profile is not found
-		}
-	}
-
-	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
-		result, err := r.handleDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
-		if err != nil {
-			return result, err
-		}
-		// If we need to requeue (jobs still running), do so
-		if result.RequeueAfter > 0 {
-			return result, nil
-		}
-	}
-
 	hostLeaseList := &v1alpha1.HostLeaseList{}
 	err := r.List(ctx, hostLeaseList,
 		client.InNamespace(bareMetalPool.Namespace),
@@ -391,6 +369,23 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 	if len(hostLeaseList.Items) > 0 {
 		log.Info("Waiting for HostLeases to be deleted", "count", len(hostLeaseList.Items))
 		return ctrl.Result{RequeueAfter: r.HostDeletionPollIntervalDuration}, nil
+	}
+
+	// Handle profile teardown workflow if configured
+	if bareMetalPool.Spec.Profile != nil {
+		profileName := bareMetalPool.Spec.Profile.Name
+		currentProfile := profile.Get(profileName)
+		if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
+			result, err := r.handleDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
+			if err != nil {
+				return result, err
+			}
+			if !result.IsZero() {
+				return result, nil
+			}
+		} else {
+			log.Info("Profile does not exist during deletion", "profile name", profileName)
+		}
 	}
 
 	if controllerutil.RemoveFinalizer(bareMetalPool, BareMetalPoolFinalizer) {
