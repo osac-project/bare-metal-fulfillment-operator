@@ -105,6 +105,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 	BeforeEach(func() {
 		testNamespace = "default"
 		mockK8sClient = &mockClient{Client: k8sClient}
+		hostReadyPollIntervalDuration := DefaultHostReadyPollIntervalDuration
 		hostDeletionPollIntervalDuration := DefaultHostDeletionPollIntervalDuration
 		provisionJobPollIntervalDuration := DefaultAAPStatusPollIntervalDuration
 		maxJobHistory := DefaultMaxJobHistory
@@ -113,6 +114,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			mockK8sClient,
 			k8sClient.Scheme(),
 			nil, // provider - not needed for basic tests
+			hostReadyPollIntervalDuration,
 			hostDeletionPollIntervalDuration,
 			provisionJobPollIntervalDuration,
 			maxJobHistory,
@@ -258,7 +260,39 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
+			// Verify pool is NOT ready yet (HostLeases don't have ProvisionTemplateComplete)
 			condition := updatedPool.GetStatusCondition(osacv1alpha1.BareMetalPoolConditionTypeReady)
+			if condition != nil {
+				Expect(condition.Status).NotTo(Equal(metav1.ConditionTrue))
+				Expect(condition.Reason).NotTo(Equal(osacv1alpha1.BareMetalPoolReasonReady))
+			}
+
+			hostLeaseList := &osacv1alpha1.HostLeaseList{}
+			err = k8sClient.List(ctx, hostLeaseList,
+				client.InNamespace(testNamespace),
+				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			for i := range hostLeaseList.Items {
+				hostLeaseList.Items[i].Status.Phase = osacv1alpha1.HostLeasePhaseReady
+				Expect(k8sClient.Status().Update(ctx, &hostLeaseList.Items[i])).To(Succeed())
+			}
+
+			// Reconcile again to check readiness
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testPoolName,
+					Namespace: testNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      testPoolName,
+				Namespace: testNamespace,
+			}, updatedPool)).To(Succeed())
+
+			condition = updatedPool.GetStatusCondition(osacv1alpha1.BareMetalPoolConditionTypeReady)
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonReady))

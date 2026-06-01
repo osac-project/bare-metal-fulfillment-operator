@@ -67,6 +67,7 @@ const (
 	envProfileConfigPath   = "OSAC_PROFILE_CONFIG_PATH"
 	envMaxJobHistory       = "OSAC_MAX_JOB_HISTORY"
 
+	envHostReadyPollInterval    = "OSAC_HOST_READY_POLL_INTERVAL"
 	envHostDeletionPollInterval = "OSAC_HOST_DELETION_POLL_INTERVAL"
 	envNoFreeHostsPollInterval  = "OSAC_NO_FREE_HOSTS_POLL_INTERVAL"
 	envTryLockFailPollInterval  = "OSAC_TRY_LOCK_FAIL_POLL_INTERVAL"
@@ -356,6 +357,11 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 		}
 	}
 
+	hostReadyPollIntervalDuration := helpers.GetEnvWithDefault(
+		envHostReadyPollInterval,
+		controller.DefaultHostReadyPollIntervalDuration,
+	)
+
 	hostDeletionPollIntervalDuration := helpers.GetEnvWithDefault(
 		envHostDeletionPollInterval,
 		controller.DefaultHostDeletionPollIntervalDuration,
@@ -375,6 +381,7 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		provider,
+		hostReadyPollIntervalDuration,
 		hostDeletionPollIntervalDuration,
 		provisionJobPollIntervalDuration,
 		maxJobHistory,
