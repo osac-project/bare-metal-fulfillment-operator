@@ -152,7 +152,6 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
 	}
 
-	// Compute DesiredConfigVersion from spec
 	desiredConfigVersion, err := provisioning.ComputeDesiredConfigVersion(bareMetalPool.Spec)
 	if err != nil {
 		log.Error(err, "Failed to compute desired config version")
@@ -167,140 +166,26 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 	}
 	bareMetalPool.Status.DesiredConfigVersion = desiredConfigVersion
 
-	var currentProfile *profile.Profile
-	if bareMetalPool.Spec.Profile != nil {
-		profileName := bareMetalPool.Spec.Profile.Name
-		currentProfile = profile.Get(profileName)
-		if currentProfile == nil {
-			log.Info("Profile does not exist", "profile name", profileName)
-			bareMetalPool.SetStatusCondition(
-				v1alpha1.BareMetalPoolConditionTypeReady,
-				metav1.ConditionFalse,
-				"Profile does not exist",
-				v1alpha1.BareMetalPoolReasonFailed,
-			)
-			return ctrl.Result{}, nil
-		}
-		if !currentProfile.ValidateParameters(bareMetalPool.Spec.Profile.TemplateParameters) {
-			log.Info("TemplateParameters do not match the profile's expected parameters")
-			bareMetalPool.SetStatusCondition(
-				v1alpha1.BareMetalPoolConditionTypeReady,
-				metav1.ConditionFalse,
-				"TemplateParameters do not match the profile's expected parameters",
-				v1alpha1.BareMetalPoolReasonFailed,
-			)
-			return ctrl.Result{}, nil
-		}
+	currentProfile, ok := r.validateProfile(ctx, bareMetalPool)
+	if !ok {
+		return ctrl.Result{}, nil
 	}
 
-	if controllerutil.AddFinalizer(bareMetalPool, BareMetalPoolFinalizer) {
-		if err := r.Update(ctx, bareMetalPool); err != nil {
-			log.Error(err, "Failed to add finalizer")
-			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
-			bareMetalPool.SetStatusCondition(
-				v1alpha1.BareMetalPoolConditionTypeReady,
-				metav1.ConditionFalse,
-				"Failed to add finalizer",
-				v1alpha1.BareMetalPoolReasonFailed,
-			)
-			return ctrl.Result{}, err
-		}
-		log.Info("Added finalizer")
-		return ctrl.Result{}, nil
+	if err := r.ensureFinalizer(ctx, bareMetalPool); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if bareMetalPool.Status.HostSets == nil {
 		bareMetalPool.Status.HostSets = []v1alpha1.BareMetalHostSet{}
 	}
 
-	// List all HostLease CRs owned by this BareMetalPool
-	log.Info("Retrieving HostLeases")
-	hostLeaseList := &v1alpha1.HostLeaseList{}
-	err = r.List(ctx, hostLeaseList,
-		client.InNamespace(bareMetalPool.Namespace),
-		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
-	)
+	currentHostLeases, err := r.listAndGroupHostLeases(ctx, bareMetalPool)
 	if err != nil {
-		log.Error(err, "Failed to list HostLease CRs")
-		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
-		bareMetalPool.SetStatusCondition(
-			v1alpha1.BareMetalPoolConditionTypeReady,
-			metav1.ConditionFalse,
-			"Failed to list HostLease CRs",
-			v1alpha1.BareMetalPoolReasonFailed,
-		)
 		return ctrl.Result{}, err
 	}
 
-	// Group current host leases per hostType
-	log.Info("Extracting HostLeases")
-	currentHostLeases := map[string][]*v1alpha1.HostLease{}
-	for i := range hostLeaseList.Items {
-		// Skip HostLeases that are being deleted
-		if !hostLeaseList.Items[i].DeletionTimestamp.IsZero() {
-			continue
-		}
-		hostType := hostLeaseList.Items[i].Spec.HostType
-		currentHostLeases[hostType] = append(currentHostLeases[hostType], &hostLeaseList.Items[i])
-	}
-
-	// Build a map of desired replicas for easier lookup
-	log.Info("Determining desired replica count per host type")
-	desiredReplicas := map[string]int32{}
-	for _, hostSet := range bareMetalPool.Spec.HostSets {
-		desiredReplicas[hostSet.HostType] = hostSet.Replicas
-	}
-	for hostType := range currentHostLeases {
-		if _, ok := desiredReplicas[hostType]; !ok {
-			desiredReplicas[hostType] = 0
-		}
-	}
-
-	// Scale up or down for each desired hostType
-	defer r.updateStatusHostSets(bareMetalPool, currentHostLeases)
-	for hostType, replicas := range desiredReplicas {
-		delta := replicas - int32(len(currentHostLeases[hostType]))
-		if delta > 0 {
-			log.Info(fmt.Sprintf("Scaling up: %s (+%d)", hostType, delta))
-			for range delta {
-				log.Info("Creating HostLease", "hostType", hostType)
-				if err := r.createHostLeaseCR(ctx, bareMetalPool, hostType, currentProfile); err != nil {
-					log.Error(err, "Failed to create HostLease CR")
-					bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
-					bareMetalPool.SetStatusCondition(
-						v1alpha1.BareMetalPoolConditionTypeReady,
-						metav1.ConditionFalse,
-						"Failed to create HostLease CR",
-						v1alpha1.BareMetalPoolReasonFailed,
-					)
-					return ctrl.Result{}, err
-				}
-				currentHostLeases[hostType] = append(currentHostLeases[hostType], nil)
-			}
-		} else if delta < 0 {
-			log.Info(fmt.Sprintf("Scaling down: %s (-%d)", hostType, -delta))
-			for int32(len(currentHostLeases[hostType])) > replicas {
-				log.Info("Deleting HostLease", "hostType", hostType)
-				lastIdx := len(currentHostLeases[hostType]) - 1
-				hostLeaseToDelete := currentHostLeases[hostType][lastIdx]
-				if err := r.Delete(ctx, hostLeaseToDelete); client.IgnoreNotFound(err) != nil {
-					log.Error(err, "Failed to delete HostLease CR", "hostLease", hostLeaseToDelete.Name)
-					bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
-					bareMetalPool.SetStatusCondition(
-						v1alpha1.BareMetalPoolConditionTypeReady,
-						metav1.ConditionFalse,
-						"Failed to delete HostLease CR",
-						v1alpha1.BareMetalPoolReasonFailed,
-					)
-					return ctrl.Result{}, err
-				}
-				currentHostLeases[hostType] = currentHostLeases[hostType][:lastIdx]
-				if len(currentHostLeases[hostType]) == 0 {
-					delete(currentHostLeases, hostType)
-					break
-				}
-			}
-		}
+	if err := r.reconcileHostLeases(ctx, bareMetalPool, currentHostLeases, currentProfile); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
@@ -324,6 +209,187 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 
 	log.Info("Successfully updated BareMetalPool")
 	return ctrl.Result{}, nil
+}
+
+// validateProfile validates the profile configuration and returns the profile if valid.
+func (r *BareMetalPoolReconciler) validateProfile(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (*profile.Profile, bool) {
+	log := logf.FromContext(ctx)
+
+	if bareMetalPool.Spec.Profile == nil {
+		return nil, true
+	}
+
+	profileName := bareMetalPool.Spec.Profile.Name
+	currentProfile := profile.Get(profileName)
+	if currentProfile == nil {
+		log.Info("Profile does not exist", "profile name", profileName)
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Profile does not exist",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return nil, false
+	}
+
+	if !currentProfile.ValidateParameters(bareMetalPool.Spec.Profile.TemplateParameters) {
+		log.Info("TemplateParameters do not match the profile's expected parameters")
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"TemplateParameters do not match the profile's expected parameters",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return nil, false
+	}
+
+	return currentProfile, true
+}
+
+// ensureFinalizer adds the finalizer if not present.
+func (r *BareMetalPoolReconciler) ensureFinalizer(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) error {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.AddFinalizer(bareMetalPool, BareMetalPoolFinalizer) {
+		return nil
+	}
+
+	if err := r.Update(ctx, bareMetalPool); err != nil {
+		log.Error(err, "Failed to add finalizer")
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Failed to add finalizer",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return err
+	}
+
+	log.Info("Added finalizer")
+	return nil
+}
+
+// listAndGroupHostLeases lists all HostLeases and groups them by hostType.
+func (r *BareMetalPoolReconciler) listAndGroupHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (map[string][]*v1alpha1.HostLease, error) {
+	log := logf.FromContext(ctx)
+	log.Info("Retrieving HostLeases")
+
+	hostLeaseList := &v1alpha1.HostLeaseList{}
+	err := r.List(ctx, hostLeaseList,
+		client.InNamespace(bareMetalPool.Namespace),
+		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
+	)
+	if err != nil {
+		log.Error(err, "Failed to list HostLease CRs")
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Failed to list HostLease CRs",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return nil, err
+	}
+
+	log.Info("Extracting HostLeases")
+	currentHostLeases := map[string][]*v1alpha1.HostLease{}
+	for i := range hostLeaseList.Items {
+		if !hostLeaseList.Items[i].DeletionTimestamp.IsZero() {
+			continue
+		}
+		hostType := hostLeaseList.Items[i].Spec.HostType
+		currentHostLeases[hostType] = append(currentHostLeases[hostType], &hostLeaseList.Items[i])
+	}
+
+	return currentHostLeases, nil
+}
+
+// reconcileHostLeases scales up or down the HostLeases to match desired state.
+func (r *BareMetalPoolReconciler) reconcileHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, currentHostLeases map[string][]*v1alpha1.HostLease, currentProfile *profile.Profile) error {
+	log := logf.FromContext(ctx)
+	log.Info("Determining desired replica count per host type")
+
+	desiredReplicas := map[string]int32{}
+	for _, hostSet := range bareMetalPool.Spec.HostSets {
+		desiredReplicas[hostSet.HostType] = hostSet.Replicas
+	}
+	for hostType := range currentHostLeases {
+		if _, ok := desiredReplicas[hostType]; !ok {
+			desiredReplicas[hostType] = 0
+		}
+	}
+
+	defer r.updateStatusHostSets(bareMetalPool, currentHostLeases)
+
+	for hostType, replicas := range desiredReplicas {
+		delta := replicas - int32(len(currentHostLeases[hostType]))
+		if delta > 0 {
+			if err := r.scaleUpHostLeases(ctx, bareMetalPool, hostType, delta, currentHostLeases, currentProfile); err != nil {
+				return err
+			}
+		} else if delta < 0 {
+			if err := r.scaleDownHostLeases(ctx, bareMetalPool, hostType, replicas, currentHostLeases); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// scaleUpHostLeases creates additional HostLeases for the specified hostType.
+func (r *BareMetalPoolReconciler) scaleUpHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, delta int32, currentHostLeases map[string][]*v1alpha1.HostLease, currentProfile *profile.Profile) error {
+	log := logf.FromContext(ctx)
+	log.Info(fmt.Sprintf("Scaling up: %s (+%d)", hostType, delta))
+
+	for range delta {
+		log.Info("Creating HostLease", "hostType", hostType)
+		if err := r.createHostLeaseCR(ctx, bareMetalPool, hostType, currentProfile); err != nil {
+			log.Error(err, "Failed to create HostLease CR")
+			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+			bareMetalPool.SetStatusCondition(
+				v1alpha1.BareMetalPoolConditionTypeReady,
+				metav1.ConditionFalse,
+				"Failed to create HostLease CR",
+				v1alpha1.BareMetalPoolReasonFailed,
+			)
+			return err
+		}
+		currentHostLeases[hostType] = append(currentHostLeases[hostType], nil)
+	}
+
+	return nil
+}
+
+// scaleDownHostLeases deletes excess HostLeases for the specified hostType.
+func (r *BareMetalPoolReconciler) scaleDownHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, replicas int32, currentHostLeases map[string][]*v1alpha1.HostLease) error {
+	log := logf.FromContext(ctx)
+	log.Info(fmt.Sprintf("Scaling down: %s (-%d)", hostType, int32(len(currentHostLeases[hostType]))-replicas))
+
+	for int32(len(currentHostLeases[hostType])) > replicas {
+		log.Info("Deleting HostLease", "hostType", hostType)
+		lastIdx := len(currentHostLeases[hostType]) - 1
+		hostLeaseToDelete := currentHostLeases[hostType][lastIdx]
+		if err := r.Delete(ctx, hostLeaseToDelete); client.IgnoreNotFound(err) != nil {
+			log.Error(err, "Failed to delete HostLease CR", "hostLease", hostLeaseToDelete.Name)
+			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+			bareMetalPool.SetStatusCondition(
+				v1alpha1.BareMetalPoolConditionTypeReady,
+				metav1.ConditionFalse,
+				"Failed to delete HostLease CR",
+				v1alpha1.BareMetalPoolReasonFailed,
+			)
+			return err
+		}
+		currentHostLeases[hostType] = currentHostLeases[hostType][:lastIdx]
+		if len(currentHostLeases[hostType]) == 0 {
+			delete(currentHostLeases, hostType)
+			break
+		}
+	}
+
+	return nil
 }
 
 // handleDeletion handles the cleanup when a BareMetalPool is being deleted
