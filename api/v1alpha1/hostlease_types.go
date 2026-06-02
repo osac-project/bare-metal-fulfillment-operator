@@ -71,20 +71,7 @@ type HostLeaseSpec struct {
 	// This represents the user's intent; the actual observed state is in status.poweredOn.
 	// +kubebuilder:validation:Optional
 	PoweredOn *bool `json:"poweredOn,omitempty"`
-	// NetworkInterfaces lists the host's network interfaces with desired network binding.
-	NetworkInterfaces []NetworkInterfaceSpec `json:"networkInterfaces,omitempty"`
-	// Provisioning holds the desired host state and
-	// when active, image-based URL and provisioning network (e.g. external).
-	Provisioning *ProvisioningSpec `json:"provisioning,omitempty"`
 }
-
-// Provisioning state values for spec.provisioning.provisioningState.
-const (
-	// ProvisioningStateActive means the host is fully provisioned.
-	ProvisioningStateActive = "active"
-	// ProvisioningStateAvailable means the host is available to be provisioned.
-	ProvisioningStateAvailable = "available"
-)
 
 // HostLeasePhaseType is a valid value for .status.phase
 type HostLeasePhaseType string
@@ -121,12 +108,6 @@ const (
 	// Set condition status to True and reason to PowerOff when power off is successful.
 	// Set condition status to False and reason to IronicAPIFailure when the operation fails.
 	HostConditionPowerSynced HostLeaseConditionType = "PowerSynced"
-
-	// HostConditionProvisioned means the host provisioning is complete.
-	HostConditionProvisioned HostLeaseConditionType = "Provisioned"
-
-	// HostConditionDeprovisioned means the host deprovisioning is complete.
-	HostConditionDeprovisioned HostLeaseConditionType = "Deprovisioned"
 
 	// HostConditionProvisionTemplateComplete tracks provision template completion.
 	// Set condition status True on success.
@@ -165,35 +146,6 @@ type HostSelectorSpec struct {
 	HostSelector map[string]string `json:"hostSelector,omitempty"`
 }
 
-// NetworkInterfaceSpec describes a desired network interface and its network binding.
-type NetworkInterfaceSpec struct {
-	// MACAddress is the interface MAC address.
-	MACAddress string `json:"macAddress,omitempty"`
-	// Network is the network to attach this interface to (e.g. private-vlan-network).
-	Network string `json:"network,omitempty"`
-}
-
-// HostLeaseImageSpec holds image provisioning details.
-type HostLeaseImageSpec struct {
-	// URL is the image location used for image-based provisioning.
-	URL string `json:"url,omitempty"`
-	// ProviderOptions is a free-form map of provider-specific image options, such as checksum.
-	ProviderOptions map[string]string `json:"providerOptions,omitempty"`
-}
-
-// ProvisioningSpec holds desired provisioning parameters.
-// +kubebuilder:validation:XValidation:rule="self.provisioningState != 'active' || (has(self.imageSpec) && has(self.imageSpec.url) && size(self.imageSpec.url) > 0 && has(self.provisioningNetwork) && size(self.provisioningNetwork) > 0)",message="when provisioningState is active, imageSpec.url and provisioningNetwork must be set"
-type ProvisioningSpec struct {
-	// ProvisioningState is the desired provisioning outcome: active (deployed) or available (in pool).
-	// +kubebuilder:validation:Enum=active;available
-	ProvisioningState string `json:"provisioningState,omitempty"`
-	// ImageSpec contains image source URL and provider-specific options.
-	ImageSpec HostLeaseImageSpec `json:"imageSpec,omitempty"`
-	// ProvisioningNetwork is the network reference used by
-	// BareMetalPool External Provisioning Profile (for example, a Neutron network name).
-	ProvisioningNetwork string `json:"provisioningNetwork,omitempty"`
-}
-
 // HostLeaseStatus defines the observed state of HostLease.
 type HostLeaseStatus struct {
 	// Phase provides a single-value overview of the state of the HostLease
@@ -214,26 +166,6 @@ type HostLeaseStatus struct {
 	DesiredConfigVersion string `json:"desiredConfigVersion,omitempty"`
 	// PoweredOn is the current power state.
 	PoweredOn *bool `json:"poweredOn,omitempty"`
-	// NetworkInterfaces lists the host's network interfaces (from inventory or observed).
-	NetworkInterfaces []NetworkInterfaceStatus `json:"networkInterfaces,omitempty"`
-	// Provisioning holds current provisioning URL and state from the backend.
-	Provisioning ProvisionStatus `json:"provisioning,omitempty"`
-}
-
-// NetworkInterfaceStatus describes an observed network interface.
-type NetworkInterfaceStatus struct {
-	// MACAddress is the interface MAC address.
-	MACAddress string `json:"macAddress,omitempty"`
-	// Network is the observed network attachment for this interface.
-	Network string `json:"network,omitempty"`
-}
-
-// ProvisionStatus holds current provisioning state from the bare metal management provider.
-type ProvisionStatus struct {
-	// URL is the URL of the currently provisioned image.
-	URL string `json:"url,omitempty"`
-	// ProvisioningState is the current provisioning state (e.g. active).
-	ProvisioningState string `json:"provisioningState,omitempty"`
 }
 
 // GetPoolID returns the owning BareMetalPool UID if the HostLease is owned by a BareMetalPool.
