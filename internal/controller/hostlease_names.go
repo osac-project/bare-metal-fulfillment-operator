@@ -32,9 +32,18 @@ const (
 
 	// TryLockFailPollIntervalDuration is the default polling interval when lock acquisition fails
 	DefaultTryLockFailPollIntervalDuration = 1 * time.Second
+
+	// DefaultManagementRecheckIntervalDuration is the default interval to recheck management operations (power state, etc.)
+	DefaultManagementRecheckIntervalDuration = 10 * time.Second
+
+	// DefaultProvisionPollIntervalDuration is the default interval to poll provisioning job status
+	DefaultProvisionPollIntervalDuration = 30 * time.Second
 )
 
 var (
 	// HostLeaseInventoryFinalizer is the finalizer added to HostLease resources for inventory cleanup
 	HostLeaseInventoryFinalizer string = fmt.Sprintf("%s/inventory", shared.OsacPrefix)
+
+	// HostLeaseManagementFinalizer is the finalizer for management operations
+	HostLeaseManagementFinalizer string = fmt.Sprintf("%s/hostlease", shared.OsacPrefix)
 )

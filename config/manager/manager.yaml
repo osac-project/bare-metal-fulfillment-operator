@@ -115,6 +115,8 @@ spec:
         volumeMounts:
           - name: inventory-config
             mountPath: /etc/osac/inventory/
+          - name: management-config
+            mountPath: /etc/osac/management/
           - name: clouds
             mountPath: /etc/openstack/
           - name: profiles
@@ -123,6 +125,9 @@ spec:
         - name: inventory-config
           secret:
             secretName: osac-inventory-config
+        - name: management-config
+          secret:
+            secretName: osac-management-config
         - name: clouds
           secret:
             secretName: osac-os-clouds

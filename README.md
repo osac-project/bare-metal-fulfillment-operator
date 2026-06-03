@@ -46,6 +46,32 @@ networkClass: openstack
 - `hostClass` — host management class to use
 - `networkClass` — network class to use
 
+### Management
+
+The operator reads management configuration to connect to backend management
+systems for power control operations (e.g., Ironic for OpenStack bare metal).
+
+**Configuration file:** `/etc/osac/management/management.yaml` (default)
+
+The path can be overridden with the `OSAC_MANAGEMENT_CONFIG_PATH` environment variable.
+
+**Example:**
+
+```yaml
+name: my-management
+type: openstack
+options:
+  openstack:
+    cloud: osac-project
+```
+
+**Fields:**
+- `name` — identifier for this management backend
+- `type` — management backend type (e.g., `openstack`)
+- `options` — backend-specific configuration options
+  - For `openstack` type: the `openstack` key contains cloud configuration
+    following the [gophercloud clouds.yaml format](https://github.com/gophercloud/utils/blob/main/openstack/clientconfig/requests.go)
+
 ### Host Lock
 
 The inventory package provides in-memory locking (`inventory.TryLock()` and
@@ -97,6 +123,7 @@ The following environment variables can be used to configure controller behavior
 #### Configuration Paths
 
 - **`OSAC_INVENTORY_CONFIG_PATH`** — Path to the inventory configuration file. Default: `/etc/osac/inventory/inventory.yaml`
+- **`OSAC_MANAGEMENT_CONFIG_PATH`** — Path to the management configuration file. Default: `/etc/osac/management/management.yaml`
 - **`OSAC_PROFILE_CONFIG_PATH`** — Path to the profile configuration file. Default: `/etc/osac/profile/profile.yaml`
 
 #### AAP Provisioning Provider

@@ -21,11 +21,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,7 +32,10 @@ import (
 
 	"github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/management"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
+	opv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
+	"github.com/osac-project/osac-operator/pkg/provisioning"
 )
 
 // mockInventoryClient implements inventory.Client for testing
@@ -64,894 +66,933 @@ func (m *mockInventoryClient) UnassignHost(ctx context.Context, inventoryHostID 
 	return nil
 }
 
+// mockManagementClient implements management.Client for testing
+type mockManagementClient struct {
+	getPowerStateFunc func(ctx context.Context, hostID string) (*management.PowerStatus, error)
+	setPowerStateFunc func(ctx context.Context, hostID string, target management.PowerState) error
+}
+
+func (m *mockManagementClient) GetPowerState(ctx context.Context, hostID string) (*management.PowerStatus, error) {
+	if m.getPowerStateFunc != nil {
+		return m.getPowerStateFunc(ctx, hostID)
+	}
+	return &management.PowerStatus{State: management.PowerOff}, nil
+}
+
+func (m *mockManagementClient) SetPowerState(ctx context.Context, hostID string, target management.PowerState) error {
+	if m.setPowerStateFunc != nil {
+		return m.setPowerStateFunc(ctx, hostID, target)
+	}
+	return nil
+}
+
+// mockProvisioningProvider implements provisioning.ProvisioningProvider for testing
+type mockProvisioningProvider struct {
+	triggerProvisionFunc     func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error)
+	getProvisionStatusFunc   func(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error)
+	triggerDeprovisionFunc   func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error)
+	getDeprovisionStatusFunc func(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error)
+	nameFunc                 func() string
+}
+
+func (m *mockProvisioningProvider) TriggerProvision(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
+	if m.triggerProvisionFunc != nil {
+		return m.triggerProvisionFunc(ctx, resource)
+	}
+	return &provisioning.ProvisionResult{
+		JobID:        "test-job-id",
+		InitialState: opv1alpha1.JobStatePending,
+		Message:      "Provision triggered",
+	}, nil
+}
+
+func (m *mockProvisioningProvider) GetProvisionStatus(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error) {
+	if m.getProvisionStatusFunc != nil {
+		return m.getProvisionStatusFunc(ctx, resource, jobID)
+	}
+	return provisioning.ProvisionStatus{
+		JobID:   jobID,
+		State:   opv1alpha1.JobStateSucceeded,
+		Message: "Provision completed",
+	}, nil
+}
+
+func (m *mockProvisioningProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+	if m.triggerDeprovisionFunc != nil {
+		return m.triggerDeprovisionFunc(ctx, resource)
+	}
+	return &provisioning.DeprovisionResult{
+		Action:                 provisioning.DeprovisionTriggered,
+		JobID:                  "test-deprovision-job-id",
+		BlockDeletionOnFailure: false,
+	}, nil
+}
+
+func (m *mockProvisioningProvider) GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error) {
+	if m.getDeprovisionStatusFunc != nil {
+		return m.getDeprovisionStatusFunc(ctx, resource, jobID)
+	}
+	return provisioning.ProvisionStatus{
+		JobID:   jobID,
+		State:   opv1alpha1.JobStateSucceeded,
+		Message: "Deprovision completed",
+	}, nil
+}
+
+func (m *mockProvisioningProvider) Name() string {
+	if m.nameFunc != nil {
+		return m.nameFunc()
+	}
+	return "mock-provider"
+}
+
 var _ = Describe("HostLease Controller", func() {
 	var (
-		reconciler        *HostLeaseReconciler
-		mockInvClient     *mockInventoryClient
-		mockK8sClient     *mockClient
-		testHostLease     *v1alpha1.HostLease
-		testNamespace     string
-		testHostLeaseName string
-		testPool          *v1alpha1.BareMetalPool
-		testPoolName      string
+		ctx              context.Context
+		reconciler       *HostLeaseReconciler
+		mockK8sClient    *mockClient
+		mockInvClient    *mockInventoryClient
+		mockMgmtClient   *mockManagementClient
+		mockProvProvider *mockProvisioningProvider
+		hostLease        *v1alpha1.HostLease
+
+		namespace string
+		hostType  string
+		hostClass string
 	)
 
-	// Common setup for ALL tests
 	BeforeEach(func() {
-		testNamespace = "default"
-		testPoolName = "test-pool-for-host-tests"
-		mockInvClient = &mockInventoryClient{}
+		ctx = context.Background()
 		mockK8sClient = &mockClient{Client: k8sClient}
+		mockInvClient = &mockInventoryClient{}
+		mockMgmtClient = &mockManagementClient{}
+		mockProvProvider = nil
 
-		// Create a real BareMetalPool for owner references
-		testPool = &v1alpha1.BareMetalPool{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "osac.openshift.io/v1alpha1",
-				Kind:       "BareMetalPool",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      testPoolName,
-				Namespace: testNamespace,
-			},
-			Spec: v1alpha1.BareMetalPoolSpec{
-				HostSets: []v1alpha1.BareMetalHostSet{
-					{
-						HostType: "fc430",
-						Replicas: 1,
-					},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, testPool)).To(Succeed())
-
-		// Retrieve the pool to get the UID assigned by Kubernetes
-		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name:      testPoolName,
-			Namespace: testNamespace,
-		}, testPool)).To(Succeed())
+		namespace = "default"
+		hostType = "fc430"
+		hostClass = "external-mgmt"
 
 		reconciler = NewHostLeaseReconciler(
 			mockK8sClient,
 			k8sClient.Scheme(),
 			mockInvClient,
-			DefaultNoFreeHostsPollIntervalDuration,
-			DefaultTryLockFailPollIntervalDuration,
+			mockMgmtClient,
+			mockProvProvider,
+			0,
+			0,
+			0,
+			0,
 		)
 	})
 
-	// Common cleanup for ALL tests
-	AfterEach(func() {
-		// Reset all mock functions
-		mockK8sClient.updateFunc = nil
-		mockK8sClient.deleteFunc = nil
-		mockK8sClient.statusUpdateFunc = nil
-		mockInvClient.findFreeHostFunc = nil
-		mockInvClient.assignHostFunc = nil
-		mockInvClient.unassignHostFunc = nil
+	Describe("NewHostLeaseReconciler", func() {
+		Context("when interval duration parameters are zero or negative", func() {
+			BeforeEach(func() {
+				reconciler = NewHostLeaseReconciler(
+					mockK8sClient,
+					k8sClient.Scheme(),
+					mockInvClient,
+					mockMgmtClient,
+					mockProvProvider,
+					-1*time.Second,
+					0,
+					-5*time.Second,
+					0,
+				)
+			})
 
-		if testHostLeaseName != "" && testNamespace != "" {
-			hostLease := &v1alpha1.HostLease{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, hostLease)
-			if err == nil {
-				// Remove finalizer and delete
-				hostLease.Finalizers = []string{}
-				_ = k8sClient.Update(ctx, hostLease)
-				_ = k8sClient.Delete(ctx, hostLease)
-			}
-		}
+			It("should set them to the default values", func() {
+				Expect(reconciler.NoFreeHostsPollIntervalDuration).To(Equal(DefaultNoFreeHostsPollIntervalDuration))
+				Expect(reconciler.TryLockFailPollIntervalDuration).To(Equal(DefaultTryLockFailPollIntervalDuration))
+				Expect(reconciler.ManagementRecheckIntervalDuration).To(Equal(DefaultManagementRecheckIntervalDuration))
+				Expect(reconciler.ProvisionPollIntervalDuration).To(Equal(DefaultProvisionPollIntervalDuration))
+			})
+		})
 
-		// Clean up the BareMetalPool
-		if testPoolName != "" && testNamespace != "" {
-			pool := &v1alpha1.BareMetalPool{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testPoolName,
-				Namespace: testNamespace,
-			}, pool)
-			if err == nil {
-				pool.Finalizers = []string{}
-				_ = k8sClient.Update(ctx, pool)
-				_ = k8sClient.Delete(ctx, pool)
-			}
-		}
+		Context("when interval duration parameters are positive", func() {
+			It("should use the provided values", func() {
+				customReconciler := NewHostLeaseReconciler(
+					mockK8sClient,
+					k8sClient.Scheme(),
+					mockInvClient,
+					mockMgmtClient,
+					mockProvProvider,
+					45*time.Second,
+					2*time.Second,
+					15*time.Second,
+					60*time.Second,
+				)
+
+				Expect(customReconciler.NoFreeHostsPollIntervalDuration).To(Equal(45 * time.Second))
+				Expect(customReconciler.TryLockFailPollIntervalDuration).To(Equal(2 * time.Second))
+				Expect(customReconciler.ManagementRecheckIntervalDuration).To(Equal(15 * time.Second))
+				Expect(customReconciler.ProvisionPollIntervalDuration).To(Equal(60 * time.Second))
+			})
+		})
 	})
 
-	Context("When reconciling a completely new HostLease without finalizer", func() {
+	Describe("reconcileInventory", func() {
 		BeforeEach(func() {
-			testHostLeaseName = "test-host-new"
-
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
+			hostLease = &v1alpha1.HostLease{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-					Labels: map[string]string{
-						"pool-id": string(testPool.UID),
+					Name:      "reconcileInventory-hostLease",
+					Namespace: namespace,
+					UID:       "test-uid-123",
+					Finalizers: []string{
+						HostLeaseInventoryFinalizer,
 					},
 				},
 				Spec: v1alpha1.HostLeaseSpec{
-					HostType:         "fc430",
-					ExternalHostID:   "",
-					ExternalHostName: "test-host",
+					HostType: hostType,
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      shared.OsacDefaultManagedByValue,
 							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
 				},
 			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
 		})
 
-		It("should add finalizer on first reconciliation", func() {
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
+		Context("when the finalizer is missing", func() {
+			BeforeEach(func() {
+				Expect(controllerutil.RemoveFinalizer(hostLease, HostLeaseInventoryFinalizer)).To(BeTrue())
 			})
-			Expect(err).NotTo(HaveOccurred())
 
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Finalizers).To(ContainElement(HostLeaseInventoryFinalizer))
-		})
-
-		It("should handle finalizer update error", func() {
-			// Mock Update to fail
-			mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-				return errors.New("update failed")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("update failed"))
-		})
-	})
-
-	Context("When reconciling a new HostLease with finalizer", func() {
-		BeforeEach(func() {
-			testHostLeaseName = "test-host-with-finalizer"
-
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(testPool.UID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					HostType:         "fc430",
-					ExternalHostID:   "",
-					ExternalHostName: "test-host",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      shared.OsacDefaultManagedByValue,
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-		})
-
-		It("should find a free host from inventory and set status id", func() {
-			mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
-				Expect(matchExpressions["hostType"]).To(Equal("fc430"))
-				Expect(matchExpressions["managedBy"]).To(Equal("baremetal"))
-				Expect(matchExpressions["provisionState"]).To(Equal("available"))
-				return &inventory.Host{
-					InventoryHostID: "inv-host-123",
-					Name:            "physical-host-1",
-					HostType:        "fc430",
-					HostClass:       "inventory-class",
-				}, nil
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-		})
-
-		It("should requeue when no free hosts are available", func() {
-			mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
-				return nil, nil
-			}
-
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(DefaultNoFreeHostsPollIntervalDuration))
-		})
-
-		It("should handle FindFreeHost error", func() {
-			mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
-				return nil, errors.New("inventory service unavailable")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("inventory service unavailable"))
-		})
-
-		It("should handle spec update error after finding host", func() {
-			mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
-				return &inventory.Host{
-					InventoryHostID: "inv-host-123",
-					Name:            "physical-host-1",
-					HostType:        "fc430",
-					HostClass:       "inventory-class",
-				}, nil
-			}
-
-			// Mock Update to fail
-			mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-				return errors.New("status update failed")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("status update failed"))
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(BeEmpty())
-			Expect(updatedHostLease.Spec.HostClass).To(BeEmpty())
-		})
-	})
-
-	Context("When reconciling a HostLease with ExternalHostID but no HostClass", func() {
-		BeforeEach(func() {
-			testHostLeaseName = "test-host-with-id"
-
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(testPool.UID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					HostType: "fc430",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      shared.OsacDefaultManagedByValue,
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-			retrievedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testHostLeaseName, Namespace: testNamespace}, retrievedHostLease)).To(Succeed())
-			retrievedHostLease.Spec.ExternalHostID = "inv-host-123" // nolint
-			Expect(k8sClient.Update(ctx, retrievedHostLease)).To(Succeed())
-		})
-
-		It("should assign the host", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
-				Expect(inventoryHostID).To(Equal("inv-host-123"))
-				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
-				return &inventory.Host{
-					InventoryHostID: "inv-host-123",
-					HostClass:       "ironic-mgmt",
-				}, nil
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-			Expect(updatedHostLease.Spec.HostClass).To(Equal("ironic-mgmt"))
-		})
-
-		It("should requeue when lock cannot be acquired", func() {
-			Expect(inventory.TryLock("inv-host-123")).To(BeTrue())
-			defer inventory.Unlock("inv-host-123")
-
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(DefaultTryLockFailPollIntervalDuration))
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-			Expect(updatedHostLease.Spec.HostClass).To(BeEmpty())
-		})
-
-		It("should unset ExternalHostID when host is already assigned to different CR", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
-				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
-				return nil, nil
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			// ExternalHostID should be unset since host was assigned to a different CR
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(BeEmpty())
-		})
-
-		It("should handle AssignHost error", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
-				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
-				return nil, errors.New("assignment failed")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("assignment failed"))
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-			Expect(updatedHostLease.Spec.HostClass).To(BeEmpty())
-		})
-
-		It("should handle update error when host is already assigned to different CR", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
-				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
-				return nil, nil // Host already assigned to different CR
-			}
-
-			// Mock Update to fail when unsetting ExternalHostID
-			mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-				hostLease, ok := obj.(*v1alpha1.HostLease)
-				if ok && hostLease.Spec.ExternalHostID == "" {
-					return errors.New("update failed")
+			It("should add the finalizer and requeue", func() {
+				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+					hl := obj.(*v1alpha1.HostLease)
+					Expect(controllerutil.ContainsFinalizer(hl, HostLeaseInventoryFinalizer)).To(BeTrue())
+					return nil
 				}
-				return nil
-			}
 
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
+				result, err := reconciler.reconcileInventory(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseAllocating))
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("update failed"))
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-			Expect(updatedHostLease.Spec.HostClass).To(BeEmpty())
 		})
 
-		It("should handle spec update error when setting HostClass", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
-				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
-				return &inventory.Host{
-					InventoryHostID: "inv-host-123",
-					HostClass:       "ironic-mgmt",
-				}, nil
-			}
-
-			// Mock Update to fail when setting HostClass
-			mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-				return errors.New("status update failed")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
+		Context("when no free hosts are available", func() {
+			BeforeEach(func() {
+				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
+					return nil, nil
+				}
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("status update failed"))
 
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
+			It("should set phase to Failed and requeue after poll interval", func() {
+				result, err := reconciler.reconcileInventory(ctx, hostLease)
 
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-			Expect(updatedHostLease.Spec.HostClass).To(BeEmpty())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(DefaultNoFreeHostsPollIntervalDuration))
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseFailed))
+			})
+		})
+
+		Context("when a free host is found", func() {
+			BeforeEach(func() {
+				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
+					Expect(matchExpressions["hostType"]).To(Equal(hostType))
+					return &inventory.Host{
+						InventoryHostID: "host-abc-123",
+						HostClass:       hostClass,
+						ManagedBy:       shared.OsacDefaultManagedByValue,
+						ProvisionState:  shared.OsacDefaultProvisionStateValue,
+					}, nil
+				}
+			})
+
+			It("should update ExternalHostID and requeue", func() {
+				updateCalled := false
+				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+					updateCalled = true
+					hl := obj.(*v1alpha1.HostLease)
+					Expect(hl.Spec.ExternalHostID).To(Equal("host-abc-123"))
+					return nil
+				}
+
+				result, err := reconciler.reconcileInventory(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(updateCalled).To(BeTrue())
+			})
+		})
+
+		Context("when assigning an ExternalHostID", func() {
+			BeforeEach(func() {
+				hostLease.Spec.ExternalHostID = "host-xyz-456"
+				mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+					Expect(inventoryHostID).To(Equal("host-xyz-456"))
+					Expect(hostLeaseID).To(Equal("test-uid-123"))
+					return &inventory.Host{
+						InventoryHostID: inventoryHostID,
+						HostClass:       hostClass,
+					}, nil
+				}
+			})
+
+			It("should assign the host and update HostClass", func() {
+				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+					hl := obj.(*v1alpha1.HostLease)
+					Expect(hl.Spec.HostClass).To(Equal(hostClass))
+					return nil
+				}
+
+				result, err := reconciler.reconcileInventory(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+			})
+		})
+
+		Context("when the host is already assigned to another HostLease", func() {
+			BeforeEach(func() {
+				hostLease.Spec.ExternalHostID = "host-taken-789"
+				mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+					return nil, nil
+				}
+			})
+
+			It("should unset ExternalHostID and requeue", func() {
+				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+					hl := obj.(*v1alpha1.HostLease)
+					Expect(hl.Spec.ExternalHostID).To(Equal(""))
+					return nil
+				}
+
+				result, err := reconciler.reconcileInventory(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+			})
 		})
 	})
 
-	Context("When reconciling a fully acquired HostLease", func() {
+	Describe("reconcileManagement", func() {
 		BeforeEach(func() {
-			testHostLeaseName = "test-host-acquired"
-
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
+			ctx = context.Background()
+			hostLease = &v1alpha1.HostLease{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-					Labels: map[string]string{
-						"pool-id": string(testPool.UID),
+					Name:      "reconcileManagement-hostLease",
+					Namespace: namespace,
+					UID:       "test-uid-123",
+					Finalizers: []string{
+						HostLeaseInventoryFinalizer,
+						HostLeaseManagementFinalizer,
 					},
 				},
 				Spec: v1alpha1.HostLeaseSpec{
-					HostType: "fc430",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      "ironic",
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-			retrievedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testHostLeaseName, Namespace: testNamespace}, retrievedHostLease)).To(Succeed())
-			retrievedHostLease.Spec.ExternalHostID = "inv-host-123"
-			retrievedHostLease.Spec.HostClass = "ironic-mgmt" //nolint
-			Expect(k8sClient.Update(ctx, retrievedHostLease)).To(Succeed())
-		})
-
-		It("should do nothing when host is already acquired", func() {
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeZero())
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
-			Expect(updatedHostLease.Spec.HostClass).To(Equal("ironic-mgmt"))
-		})
-	})
-
-	Context("When deleting a HostLease", func() {
-		BeforeEach(func() {
-			testHostLeaseName = "test-host-delete"
-		})
-
-		It("should unassign host from inventory and remove finalizer", func() {
-			poolUID := testPool.UID
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(poolUID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					HostType: "fc430",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      "ironic",
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-
-			unassignCalled := false
-			mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
-				Expect(inventoryHostID).To(Equal("inv-host-123"))
-				unassignCalled = true
-				return nil
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-
-			testHostLease.Spec.ExternalHostID = "inv-host-123"
-			testHostLease.Spec.HostClass = "ironic-mgmt"
-			Expect(k8sClient.Update(ctx, testHostLease)).To(Succeed())
-
-			Expect(k8sClient.Delete(ctx, testHostLease)).To(Succeed())
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(unassignCalled).To(BeTrue())
-
-			Eventually(func() bool {
-				deletedHostLease := &v1alpha1.HostLease{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				}, deletedHostLease)
-				return apierrors.IsNotFound(err)
-			}, 5*time.Second).Should(BeTrue())
-		})
-
-		It("should remove finalizer without unassigning if host was never assigned", func() {
-			poolUID := testPool.UID
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(poolUID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					HostType: "fc430",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      "ironic",
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-
-			unassignCalled := false
-			mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
-				unassignCalled = true
-				return nil
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, testHostLease)).To(Succeed())
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(unassignCalled).To(BeFalse())
-
-			Eventually(func() bool {
-				deletedHostLease := &v1alpha1.HostLease{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				}, deletedHostLease)
-				return apierrors.IsNotFound(err)
-			}, 5*time.Second).Should(BeTrue())
-		})
-
-		It("should remove finalizer and unassign if host lease has ExternalHostID but no HostClass", func() {
-			poolUID := testPool.UID
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(poolUID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					ExternalHostID: "inv-host-123",
-					HostType:       "fc430",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      "ironic",
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-
-			unassignCalled := false
-			mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
-				unassignCalled = true
-				return nil
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-			retrievedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testHostLeaseName, Namespace: testNamespace}, retrievedHostLease)).To(Succeed())
-			retrievedHostLease.Spec.ExternalHostID = "inv-host-123"
-			Expect(k8sClient.Update(ctx, retrievedHostLease)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, testHostLease)).To(Succeed())
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(unassignCalled).To(BeTrue())
-
-			Eventually(func() bool {
-				deletedHostLease := &v1alpha1.HostLease{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				}, deletedHostLease)
-				return apierrors.IsNotFound(err)
-			}, 5*time.Second).Should(BeTrue())
-		})
-
-		It("should handle unassign error during deletion", func() {
-			uniqueHostLeaseName := "test-host-delete-error"
-			poolUID := testPool.UID
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       uniqueHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(poolUID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					ExternalHostID: "inv-host-123",
-					HostType:       "fc430",
-					HostClass:      "ironic-mgmt",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      "ironic",
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-
-			mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
-				return errors.New("unassignment failed")
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-			retrievedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: uniqueHostLeaseName, Namespace: testNamespace}, retrievedHostLease)).To(Succeed())
-			retrievedHostLease.Spec.ExternalHostID = "inv-host-123"
-			retrievedHostLease.Spec.HostClass = "ironic-mgmt"
-			Expect(k8sClient.Update(ctx, retrievedHostLease)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, testHostLease)).To(Succeed())
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      uniqueHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("unassignment failed"))
-
-			// Manually remove finalizer since unassignment failed
-			hostLeaseToClean := &v1alpha1.HostLease{}
-			if k8sClient.Get(ctx, types.NamespacedName{Name: uniqueHostLeaseName, Namespace: testNamespace}, hostLeaseToClean) == nil {
-				controllerutil.RemoveFinalizer(hostLeaseToClean, HostLeaseInventoryFinalizer)
-				_ = k8sClient.Update(ctx, hostLeaseToClean)
-			}
-		})
-
-		It("should handle finalizer removal error during deletion", func() {
-			poolUID := testPool.UID
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels: map[string]string{
-						"pool-id": string(poolUID),
-					},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					ExternalHostID: "inv-host-123",
-					HostType:       "fc430",
-					HostClass:      "ironic-mgmt",
+					HostType: hostType,
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
 							"managedBy":      shared.OsacDefaultManagedByValue,
 							"provisionState": shared.OsacDefaultProvisionStateValue,
 						},
 					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
 				},
 			}
+		})
 
-			mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
-				return nil
-			}
-			Expect(controllerutil.SetControllerReference(testPool, testHostLease, k8sClient.Scheme())).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-
-			// Set status
-			retrievedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testHostLeaseName, Namespace: testNamespace}, retrievedHostLease)).To(Succeed())
-			retrievedHostLease.Spec.ExternalHostID = "inv-host-123"
-			retrievedHostLease.Spec.HostClass = "ironic-mgmt"
-			Expect(k8sClient.Update(ctx, retrievedHostLease)).To(Succeed())
-
-			// Delete the host
-			Expect(k8sClient.Delete(ctx, testHostLease)).To(Succeed())
-
-			// Mock Update to fail when removing finalizer
-			mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-				return errors.New("finalizer removal failed")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
+		Context("when the finalizer is missing", func() {
+			BeforeEach(func() {
+				Expect(controllerutil.RemoveFinalizer(hostLease, HostLeaseManagementFinalizer)).To(BeTrue())
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("finalizer removal failed"))
 
-			// Manually clean up since finalizer removal failed
-			hostLeaseToClean := &v1alpha1.HostLease{}
-			if k8sClient.Get(ctx, types.NamespacedName{Name: testHostLeaseName, Namespace: testNamespace}, hostLeaseToClean) == nil {
-				controllerutil.RemoveFinalizer(hostLeaseToClean, HostLeaseInventoryFinalizer)
-				_ = k8sClient.Update(ctx, hostLeaseToClean)
-			}
+			It("should add the finalizer", func() {
+				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+					hl := obj.(*v1alpha1.HostLease)
+					Expect(controllerutil.ContainsFinalizer(hl, HostLeaseManagementFinalizer)).To(BeTrue())
+					return nil
+				}
+
+				result, err := reconciler.reconcileManagement(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+			})
+		})
+
+		Context("when PoweredOn is nil", func() {
+			BeforeEach(func() {
+				hostLease.Spec.PoweredOn = nil
+			})
+
+			It("should skip reconcilePower", func() {
+				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
+					return &management.PowerStatus{State: management.PowerOff}, nil
+				}
+
+				setPowerStateCalled := false
+				mockMgmtClient.setPowerStateFunc = func(ctx context.Context, hostID string, target management.PowerState) error {
+					setPowerStateCalled = true
+					return nil
+				}
+
+				result, err := reconciler.reconcileManagement(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(setPowerStateCalled).To(BeFalse())
+
+				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
+				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseReady))
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOff))
+			})
+		})
+
+		Context("when PoweredOn is set to be false", func() {
+			BeforeEach(func() {
+				hostLease.Spec.PoweredOn = ptr.To(false)
+			})
+
+			It("should update status", func() {
+				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
+					return &management.PowerStatus{State: management.PowerOff}, nil
+				}
+
+				setPowerStateCalled := false
+				mockMgmtClient.setPowerStateFunc = func(ctx context.Context, hostID string, target management.PowerState) error {
+					setPowerStateCalled = true
+					return nil
+				}
+
+				result, err := reconciler.reconcileManagement(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(setPowerStateCalled).To(BeFalse())
+
+				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
+				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseReady))
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOff))
+			})
+		})
+
+		Context("when power is not yet converged", func() {
+			It("should requeue to be turned on", func() {
+				hostLease.Spec.PoweredOn = ptr.To(true)
+
+				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
+					return &management.PowerStatus{State: management.PowerOff}, nil
+				}
+
+				setPowerStateCalled := false
+				mockMgmtClient.setPowerStateFunc = func(ctx context.Context, hostID string, target management.PowerState) error {
+					setPowerStateCalled = true
+					return nil
+				}
+
+				result, err := reconciler.reconcileManagement(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(DefaultManagementRecheckIntervalDuration))
+				Expect(setPowerStateCalled).To(BeTrue())
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+			})
+
+			It("should requeue to be turned off", func() {
+				hostLease.Spec.PoweredOn = ptr.To(false)
+
+				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
+					return &management.PowerStatus{State: management.PowerOn}, nil
+				}
+
+				setPowerStateCalled := false
+				mockMgmtClient.setPowerStateFunc = func(ctx context.Context, hostID string, target management.PowerState) error {
+					setPowerStateCalled = true
+					return nil
+				}
+
+				result, err := reconciler.reconcileManagement(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(DefaultManagementRecheckIntervalDuration))
+				Expect(setPowerStateCalled).To(BeTrue())
+				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+			})
 		})
 	})
 
-	Context("When host lease resource doesn't exist", func() {
-		It("should handle not found error gracefully", func() {
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      "non-existent-host",
-					Namespace: "test-namespace",
+	Describe("reconcileProvisioning", func() {
+		BeforeEach(func() {
+			ctx = context.Background()
+			mockProvProvider = &mockProvisioningProvider{}
+			reconciler.ProvisioningProvider = mockProvProvider
+			hostLease = &v1alpha1.HostLease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "reconcileProvisioning-hostLease",
+					Namespace: namespace,
+					UID:       "test-uid-123",
+					Finalizers: []string{
+						HostLeaseInventoryFinalizer,
+						HostLeaseManagementFinalizer,
+					},
 				},
+				Spec: v1alpha1.HostLeaseSpec{
+					HostType:       hostType,
+					ExternalHostID: "host-123",
+					HostClass:      hostClass,
+					TemplateID:     "image-provision",
+				},
+			}
+		})
+
+		Context("when a successful provision job exists", func() {
+			BeforeEach(func() {
+				hostLease.Status.Jobs = []opv1alpha1.JobStatus{
+					{
+						JobID:     "123",
+						Type:      opv1alpha1.JobTypeProvision,
+						State:     opv1alpha1.JobStateSucceeded,
+						Message:   "successful",
+						Timestamp: metav1.Now(),
+					},
+				}
 			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeZero())
+
+			It("should not re-trigger provisioning", func() {
+				triggerCalled := false
+				mockProvProvider.triggerProvisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
+					triggerCalled = true
+					return nil, nil
+				}
+
+				result, err := reconciler.reconcileProvisioning(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(triggerCalled).To(BeFalse())
+			})
+		})
+	})
+
+	Describe("syncHostLeaseStatus", func() {
+		var log logr.Logger
+
+		BeforeEach(func() {
+			log = logr.Discard()
+			hostLease = &v1alpha1.HostLease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "syncHostLeaseStatus-hostLease",
+					Namespace: namespace,
+				},
+				Spec: v1alpha1.HostLeaseSpec{
+					ExternalHostID: "host-123",
+					HostClass:      hostClass,
+				},
+			}
+		})
+
+		Context("when there is an error", func() {
+			It("should set PowerSynced to False", func() {
+				reconciler.syncHostLeaseStatus(hostLease, nil, errors.New("ironic connection failed"), log)
+
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonIronicAPIFailure))
+				Expect(condition.Message).To(Equal("failed to sync power status"))
+			})
+		})
+
+		Context("when node is on", func() {
+			It("should set PowerSynced to True", func() {
+				powerStatus := &management.PowerStatus{State: management.PowerOn}
+				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+
+				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
+				Expect(*hostLease.Status.PoweredOn).To(BeTrue())
+
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOn))
+			})
+		})
+
+		Context("when node is off", func() {
+			It("should set PowerSynced to True", func() {
+				powerStatus := &management.PowerStatus{State: management.PowerOff}
+				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+
+				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
+				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
+
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOff))
+			})
+		})
+
+		Context("when power state does not match desired", func() {
+			BeforeEach(func() {
+				hostLease.Spec.PoweredOn = ptr.To(true)
+			})
+
+			It("should set PowerSynced to False", func() {
+				powerStatus := &management.PowerStatus{State: management.PowerOff}
+				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+
+				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
+				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
+			})
+		})
+
+		Context("when node is transitioning", func() {
+			It("should set PowerSynced to False", func() {
+				powerStatus := &management.PowerStatus{State: management.PowerOff, IsTransitioning: true}
+				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+
+				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
+				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
+				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
+				Expect(condition.Message).To(Equal("node power state is transitioning"))
+			})
+		})
+
+		Context("when powerStatus is nil and no error", func() {
+			It("should not modify status", func() {
+				reconciler.syncHostLeaseStatus(hostLease, nil, nil, log)
+
+				Expect(hostLease.Status.PoweredOn).To(BeNil())
+				Expect(hostLease.Status.Conditions).To(BeEmpty())
+			})
+		})
+	})
+
+	Describe("reconcilePower", func() {
+		var log logr.Logger
+		var powerStatus *management.PowerStatus
+
+		BeforeEach(func() {
+			log = logr.Discard()
+			hostLease = &v1alpha1.HostLease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "reconcilePower-hostLease",
+					Namespace: namespace,
+				},
+				Spec: v1alpha1.HostLeaseSpec{
+					ExternalHostID: "host-123",
+				},
+			}
+		})
+
+		Context("when its currently off and should be on", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOff}
+				hostLease.Spec.PoweredOn = ptr.To(true)
+			})
+
+			It("should power on", func() {
+				var calledTarget management.PowerState
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, target management.PowerState) error {
+					calledTarget = target
+					return nil
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(calledTarget).To(Equal(management.PowerOn))
+			})
+		})
+
+		Context("when its currently on and should be off", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOn}
+				hostLease.Spec.PoweredOn = ptr.To(false)
+			})
+
+			It("should power off", func() {
+				var calledTarget management.PowerState
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, target management.PowerState) error {
+					calledTarget = target
+					return nil
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(calledTarget).To(Equal(management.PowerOff))
+			})
+		})
+
+		Context("when power state already matches desired on", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOn}
+				hostLease.Spec.PoweredOn = ptr.To(true)
+			})
+
+			It("should not call SetPowerState", func() {
+				called := false
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
+					called = true
+					return nil
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(called).To(BeFalse())
+			})
+		})
+
+		Context("when power state already matches desired off", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOff}
+				hostLease.Spec.PoweredOn = ptr.To(false)
+			})
+
+			It("should not call SetPowerState", func() {
+				called := false
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
+					called = true
+					return nil
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(called).To(BeFalse())
+			})
+		})
+
+		Context("when node is transitioning", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOff, IsTransitioning: true}
+				hostLease.Spec.PoweredOn = ptr.To(true)
+			})
+
+			It("should skip SetPowerState", func() {
+				called := false
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
+					called = true
+					return nil
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(called).To(BeFalse())
+			})
+		})
+
+		Context("when SetPowerState returns ErrTransitioning", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOff}
+				hostLease.Spec.PoweredOn = ptr.To(true)
+			})
+
+			It("should not return error", func() {
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
+					return management.ErrTransitioning
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Context("when setting the power on fails", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOff}
+				hostLease.Spec.PoweredOn = ptr.To(true)
+			})
+
+			It("should return error", func() {
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
+					return errors.New("ironic API error")
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("ironic API error"))
+			})
+		})
+
+		Context("when setting the power off fails", func() {
+			BeforeEach(func() {
+				powerStatus = &management.PowerStatus{State: management.PowerOn}
+				hostLease.Spec.PoweredOn = ptr.To(false)
+			})
+
+			It("should return error", func() {
+				mockMgmtClient.setPowerStateFunc = func(_ context.Context, _ string, _ management.PowerState) error {
+					return errors.New("ironic API error")
+				}
+
+				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("ironic API error"))
+			})
+		})
+	})
+
+	Describe("handleDeletion", func() {
+		BeforeEach(func() {
+			hostLease = &v1alpha1.HostLease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "handleDeletion-hostLease",
+					Namespace:         namespace,
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+				Spec: v1alpha1.HostLeaseSpec{
+					ExternalHostID: "host-to-delete",
+				},
+			}
+		})
+
+		Context("when inventory finalizer is present", func() {
+			BeforeEach(func() {
+				controllerutil.AddFinalizer(hostLease, HostLeaseInventoryFinalizer)
+			})
+
+			It("should unassign the host and remove finalizer", func() {
+				unassignCalled := false
+				mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
+					unassignCalled = true
+					Expect(inventoryHostID).To(Equal("host-to-delete"))
+					return nil
+				}
+
+				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+					hl := obj.(*v1alpha1.HostLease)
+					Expect(controllerutil.ContainsFinalizer(hl, HostLeaseInventoryFinalizer)).To(BeFalse())
+					return nil
+				}
+
+				result, err := reconciler.handleDeletion(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(unassignCalled).To(BeTrue())
+			})
+
+			Context("when ExternalHostID is empty", func() {
+				BeforeEach(func() {
+					hostLease.Spec.ExternalHostID = ""
+				})
+
+				It("should remove finalizer without unassigning", func() {
+					unassignCalled := false
+					mockInvClient.unassignHostFunc = func(ctx context.Context, inventoryHostID string, labels []string) error {
+						unassignCalled = true
+						return nil
+					}
+
+					mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+						return nil
+					}
+
+					result, err := reconciler.handleDeletion(ctx, hostLease)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result).To(Equal(ctrl.Result{}))
+					Expect(unassignCalled).To(BeFalse())
+				})
+			})
+
+			Context("when management finalizer is present", func() {
+				BeforeEach(func() {
+					controllerutil.AddFinalizer(hostLease, HostLeaseManagementFinalizer)
+				})
+
+				Context("when ProvisioningProvider is nil", func() {
+					BeforeEach(func() {
+						reconciler.ProvisioningProvider = nil
+						hostLease.Spec.TemplateID = "os-provision"
+					})
+
+					It("should return an error", func() {
+						result, err := reconciler.handleDeletion(ctx, hostLease)
+
+						Expect(err).To(HaveOccurred())
+						Expect(err.Error()).To(ContainSubstring("provisioning provider not configured"))
+						Expect(result).To(Equal(ctrl.Result{}))
+					})
+				})
+
+				Context("when TemplateID is empty", func() {
+					BeforeEach(func() {
+						mockProvProvider = &mockProvisioningProvider{}
+						reconciler.ProvisioningProvider = mockProvProvider
+						hostLease.Spec.TemplateID = ""
+					})
+
+					It("should skip deprovision and remove management finalizer", func() {
+						mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+							hl := obj.(*v1alpha1.HostLease)
+							Expect(controllerutil.ContainsFinalizer(hl, HostLeaseManagementFinalizer)).To(BeFalse())
+							return nil
+						}
+
+						result, err := reconciler.handleDeletion(ctx, hostLease)
+
+						Expect(err).NotTo(HaveOccurred())
+						Expect(result).To(Equal(ctrl.Result{}))
+					})
+				})
+
+				Context("when TemplateID is noop", func() {
+					BeforeEach(func() {
+						mockProvProvider = &mockProvisioningProvider{}
+						reconciler.ProvisioningProvider = mockProvProvider
+						hostLease.Spec.TemplateID = shared.OsacNoopTemplate
+					})
+
+					It("should skip deprovision and remove management finalizer", func() {
+						mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+							hl := obj.(*v1alpha1.HostLease)
+							Expect(controllerutil.ContainsFinalizer(hl, HostLeaseManagementFinalizer)).To(BeFalse())
+							return nil
+						}
+
+						result, err := reconciler.handleDeletion(ctx, hostLease)
+
+						Expect(err).NotTo(HaveOccurred())
+						Expect(result).To(Equal(ctrl.Result{}))
+					})
+				})
+
+				It("should trigger deprovision and requeue", func() {
+					mockProvProvider = &mockProvisioningProvider{}
+					reconciler.ProvisioningProvider = mockProvProvider
+					hostLease.Spec.TemplateID = "os-provision"
+
+					mockK8sClient.statusUpdateFunc = func(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+						return nil
+					}
+
+					result, err := reconciler.handleDeletion(ctx, hostLease)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(DefaultProvisionPollIntervalDuration))
+				})
+			})
+		})
+
+		Context("when inventory finalizer is not present", func() {
+			It("should return immediately", func() {
+				result, err := reconciler.handleDeletion(ctx, hostLease)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+			})
 		})
 	})
 })

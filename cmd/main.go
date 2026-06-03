@@ -46,6 +46,7 @@ import (
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/controller"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/helpers"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/management"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/profile"
 	"github.com/osac-project/osac-operator/pkg/aap"
 	"github.com/osac-project/osac-operator/pkg/provisioning"
@@ -63,14 +64,17 @@ const (
 	envHostLeaseMaxConcurrentReconcile = "OSAC_HOSTLEASE_MAX_CONCURRENT_RECONCILES"
 
 	// Controller level configuration
-	envInventoryConfigPath = "OSAC_INVENTORY_CONFIG_PATH"
-	envProfileConfigPath   = "OSAC_PROFILE_CONFIG_PATH"
-	envMaxJobHistory       = "OSAC_MAX_JOB_HISTORY"
+	envInventoryConfigPath  = "OSAC_INVENTORY_CONFIG_PATH"
+	envManagementConfigPath = "OSAC_MANAGEMENT_CONFIG_PATH"
+	envProfileConfigPath    = "OSAC_PROFILE_CONFIG_PATH"
+	envMaxJobHistory        = "OSAC_MAX_JOB_HISTORY"
 
-	envHostReadyPollInterval    = "OSAC_HOST_READY_POLL_INTERVAL"
-	envHostDeletionPollInterval = "OSAC_HOST_DELETION_POLL_INTERVAL"
-	envNoFreeHostsPollInterval  = "OSAC_NO_FREE_HOSTS_POLL_INTERVAL"
-	envTryLockFailPollInterval  = "OSAC_TRY_LOCK_FAIL_POLL_INTERVAL"
+	envHostReadyPollInterval     = "OSAC_HOST_READY_POLL_INTERVAL"
+	envHostDeletionPollInterval  = "OSAC_HOST_DELETION_POLL_INTERVAL"
+	envNoFreeHostsPollInterval   = "OSAC_NO_FREE_HOSTS_POLL_INTERVAL"
+	envTryLockFailPollInterval   = "OSAC_TRY_LOCK_FAIL_POLL_INTERVAL"
+	envManagementRecheckInterval = "OSAC_MANAGEMENT_RECHECK_INTERVAL"
+	envProvisionPollInterval     = "OSAC_PROVISION_POLL_INTERVAL"
 
 	envAAPURL                = "OSAC_AAP_URL"
 	envAAPToken              = "OSAC_AAP_TOKEN"
@@ -256,12 +260,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := setupBareMetalPoolController(mgr); err != nil {
+	// Create shared provisioning provider
+	var provisioningProvider provisioning.ProvisioningProvider
+	aapURL := helpers.GetEnvWithDefault(envAAPURL, "")
+	aapToken := helpers.GetEnvWithDefault(envAAPToken, "")
+	if aapURL != "" && aapToken != "" {
+		insecureSkipVerify := helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false)
+		templatePrefix := helpers.GetEnvWithDefault(envAAPTemplatePrefix, "osac")
+
+		aapClient := aap.NewClient(aapURL, aapToken, insecureSkipVerify)
+
+		var err error
+		provisioningProvider, err = provisioning.NewProvider(provisioning.ProviderConfig{
+			ProviderType:   provisioning.ProviderTypeAAP,
+			AAPClient:      aapClient,
+			TemplatePrefix: templatePrefix,
+		})
+		if err != nil {
+			setupLog.Error(err, "failed to create AAP provisioning provider")
+			os.Exit(1)
+		}
+
+		setupLog.Info("AAP provisioning provider configured")
+	} else {
+		setupLog.Info("AAP not configured, provisioning workflows disabled")
+	}
+
+	if err := setupBareMetalPoolController(mgr, provisioningProvider); err != nil {
 		setupLog.Error(err, "unable to setup controller", "controller", "BareMetalPool")
 		os.Exit(1)
 	}
 
-	if err := setupHostLeaseController(ctx, mgr); err != nil {
+	if err := setupHostLeaseController(ctx, mgr, provisioningProvider); err != nil {
 		setupLog.Error(err, "unable to setup controller", "controller", "HostLease")
 		os.Exit(1)
 	}
@@ -300,7 +330,7 @@ func main() {
 }
 
 // setupBareMetalPoolController registers the BareMetalPool controller.
-func setupBareMetalPoolController(mgr ctrl.Manager) error {
+func setupBareMetalPoolController(mgr ctrl.Manager, provisioningProvider provisioning.ProvisioningProvider) error {
 	// Load profile configuration
 	profileConfigPath := helpers.GetEnvWithDefault(
 		envProfileConfigPath,
@@ -322,37 +352,6 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 		}
 		if err := profile.LoadProfiles(profiles); err != nil {
 			setupLog.Error(err, "unable to load profile config")
-			return err
-		}
-	}
-
-	var provider provisioning.ProvisioningProvider
-	aapURL := helpers.GetEnvWithDefault(envAAPURL, "")
-	aapToken := helpers.GetEnvWithDefault(envAAPToken, "")
-	if aapURL == "" || aapToken == "" {
-		setupLog.Info("AAP configuration not provided, workflow execution will be disabled")
-	} else {
-		aapClient := aap.NewClient(
-			aapURL,
-			aapToken,
-			helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false),
-		)
-
-		templatePrefix := helpers.GetEnvWithDefault(
-			envAAPTemplatePrefix,
-			"osac",
-		)
-
-		providerConfig := provisioning.ProviderConfig{
-			ProviderType:   provisioning.ProviderTypeAAP,
-			AAPClient:      aapClient,
-			TemplatePrefix: templatePrefix,
-		}
-
-		var err error
-		provider, err = provisioning.NewProvider(providerConfig)
-		if err != nil {
-			setupLog.Error(err, "Failed to create AAP provider")
 			return err
 		}
 	}
@@ -380,7 +379,7 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 	if err := controller.NewBareMetalPoolReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		provider,
+		provisioningProvider,
 		hostReadyPollIntervalDuration,
 		hostDeletionPollIntervalDuration,
 		provisionJobPollIntervalDuration,
@@ -393,7 +392,11 @@ func setupBareMetalPoolController(mgr ctrl.Manager) error {
 }
 
 // setupHostLeaseController registers the HostLease controller.
-func setupHostLeaseController(ctx context.Context, mgr ctrl.Manager) error {
+func setupHostLeaseController(
+	ctx context.Context,
+	mgr ctrl.Manager,
+	provisioningProvider provisioning.ProvisioningProvider,
+) error {
 	// Read and parse inventory configuration
 	inventoryConfigPath := helpers.GetEnvWithDefault(envInventoryConfigPath, "/etc/osac/inventory/inventory.yaml")
 	inventoryConfigData, err := os.ReadFile(inventoryConfigPath)
@@ -414,6 +417,26 @@ func setupHostLeaseController(ctx context.Context, mgr ctrl.Manager) error {
 		return fmt.Errorf("unsupported inventory type %q", inventoryConfig.Type)
 	}
 
+	// Read and parse management configuration
+	managementConfigPath := helpers.GetEnvWithDefault(envManagementConfigPath, "/etc/osac/management/management.yaml")
+	managementConfigData, err := os.ReadFile(managementConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to read management config file: %w", err)
+	}
+
+	var managementConfig management.Config
+	if err := yaml.Unmarshal(managementConfigData, &managementConfig); err != nil {
+		return fmt.Errorf("failed to parse management config: %w", err)
+	}
+
+	managementClient, err := management.NewClient(ctx, &managementConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create management client: %w", err)
+	}
+	if managementClient == nil {
+		return fmt.Errorf("unsupported management type %q", managementConfig.Type)
+	}
+
 	noFreeHostsPollInterval := helpers.GetEnvWithDefault(
 		envNoFreeHostsPollInterval,
 		controller.DefaultNoFreeHostsPollIntervalDuration,
@@ -421,6 +444,14 @@ func setupHostLeaseController(ctx context.Context, mgr ctrl.Manager) error {
 	tryLockFailPollInterval := helpers.GetEnvWithDefault(
 		envTryLockFailPollInterval,
 		controller.DefaultTryLockFailPollIntervalDuration,
+	)
+	managementRecheckInterval := helpers.GetEnvWithDefault(
+		envManagementRecheckInterval,
+		controller.DefaultManagementRecheckIntervalDuration,
+	)
+	provisionPollInterval := helpers.GetEnvWithDefault(
+		envProvisionPollInterval,
+		controller.DefaultProvisionPollIntervalDuration,
 	)
 	maxConcurrentReconciles := helpers.GetEnvWithDefault(
 		envHostLeaseMaxConcurrentReconcile,
@@ -432,8 +463,12 @@ func setupHostLeaseController(ctx context.Context, mgr ctrl.Manager) error {
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		inventoryClient,
+		managementClient,
+		provisioningProvider,
 		noFreeHostsPollInterval,
 		tryLockFailPollInterval,
+		managementRecheckInterval,
+		provisionPollInterval,
 	).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		return fmt.Errorf("hostlease controller: %w", err)
 	}
