@@ -69,6 +69,7 @@ type Profile struct {
 	Name                       string            `yaml:"name"`
 	HostSelector               map[string]string `yaml:"hostSelector"`
 	ExpectedTemplateParameters []string          `yaml:"expectedTemplateParameters"`
+	OptionalTemplateParameters []string          `yaml:"optionalTemplateParameters,omitempty"`
 	BareMetalPoolTemplate      string            `yaml:"bareMetalPoolTemplate,omitempty"`
 	HostTemplate               string            `yaml:"hostTemplate,omitempty"`
 	Labels                     map[string]string `yaml:"labels"`
@@ -86,20 +87,25 @@ func (p *Profile) ValidateParameters(templateParameters string) bool {
 		return false // Invalid JSON/YAML
 	}
 
-	// Check if the number of keys matches exactly
-	if len(params) != len(p.ExpectedTemplateParameters) {
-		return false
-	}
-
-	// Convert p.ExpectedTemplateParameters slice to a set for O(1) lookup
-	expectedKeys := make(map[string]struct{})
+	// Build a set of all allowed parameter keys (expected + optional)
+	allowedKeys := make(map[string]struct{})
 	for _, key := range p.ExpectedTemplateParameters {
-		expectedKeys[key] = struct{}{}
+		allowedKeys[key] = struct{}{}
+	}
+	for _, key := range p.OptionalTemplateParameters {
+		allowedKeys[key] = struct{}{}
 	}
 
-	// Check that all keys in the JSON are expected
+	// Check that all expected parameters are present in the template parameters
+	for _, expectedKey := range p.ExpectedTemplateParameters {
+		if _, ok := params[expectedKey]; !ok {
+			return false
+		}
+	}
+
+	// Check that all provided parameters are in the allowed set (expected or optional)
 	for key := range params {
-		if _, ok := expectedKeys[key]; !ok {
+		if _, ok := allowedKeys[key]; !ok {
 			return false
 		}
 	}
