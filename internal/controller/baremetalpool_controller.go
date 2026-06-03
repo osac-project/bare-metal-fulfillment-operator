@@ -188,7 +188,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		return ctrl.Result{}, err
 	}
 
-	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
+	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && currentProfile.BareMetalPoolTemplate != shared.OsacNoopTemplate && r.provider != nil {
 		result, err := r.TriggerProvision(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
 		if err != nil {
 			log.Error(err, "Failed to run provisioning lifecycle")
@@ -441,7 +441,7 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 	if bareMetalPool.Spec.Profile != nil {
 		profileName := bareMetalPool.Spec.Profile.Name
 		currentProfile := profile.Get(profileName)
-		if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && r.provider != nil {
+		if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && currentProfile.BareMetalPoolTemplate != shared.OsacNoopTemplate && r.provider != nil {
 			result, err := r.handleDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
 			if err != nil {
 				return result, err
@@ -449,8 +449,6 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 			if !result.IsZero() {
 				return result, nil
 			}
-		} else {
-			log.Info("Profile does not exist during deletion", "profile name", profileName)
 		}
 	}
 
@@ -587,7 +585,7 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 		HostTypeLabelKey:      hostType, // TODO: should be validated by RFC1123 in the future
 	}
 
-	templateID := "noop"
+	templateID := shared.OsacNoopTemplate
 	templateParameters := ""
 	selector := v1alpha1.HostSelectorSpec{
 		HostSelector: map[string]string{

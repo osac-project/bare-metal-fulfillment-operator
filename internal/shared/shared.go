@@ -21,6 +21,8 @@ const (
 	// OsacPrefix is the prefix used to identify osac resources
 	OsacPrefix string = "osac.openshift.io"
 
+	OsacNoopTemplate = "noop"
+
 	OsacDefaultManagedByValue      = "baremetal"
 	OsacDefaultProvisionStateValue = "available"
 )
