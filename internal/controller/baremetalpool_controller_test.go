@@ -118,6 +118,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			hostDeletionPollIntervalDuration,
 			provisionJobPollIntervalDuration,
 			maxJobHistory,
+			"test-network-class",
 		)
 	})
 

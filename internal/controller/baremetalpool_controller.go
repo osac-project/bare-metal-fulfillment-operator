@@ -51,6 +51,7 @@ type BareMetalPoolReconciler struct {
 	ProvisionJobPollIntervalDuration time.Duration
 	MaxJobHistory                    int
 	provider                         provisioning.ProvisioningProvider
+	NetworkClass                     string
 }
 
 // NewBareMetalPoolReconciler creates a new BareMetalPoolReconciler with the provided configuration.
@@ -63,6 +64,7 @@ func NewBareMetalPoolReconciler(
 	hostDeletionPollIntervalDuration time.Duration,
 	provisionJobPollIntervalDuration time.Duration,
 	maxJobHistory int,
+	networkClass string,
 ) *BareMetalPoolReconciler {
 
 	if hostReadyPollIntervalDuration <= 0 {
@@ -89,6 +91,7 @@ func NewBareMetalPoolReconciler(
 		ProvisionJobPollIntervalDuration: provisionJobPollIntervalDuration,
 		MaxJobHistory:                    maxJobHistory,
 		provider:                         provider,
+		NetworkClass:                     networkClass,
 	}
 }
 
@@ -157,6 +160,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 	log.Info("Updating BareMetalPool")
 
 	bareMetalPool.InitializeStatusConditions()
+	bareMetalPool.Status.NetworkClass = r.NetworkClass
 	if bareMetalPool.Status.Phase == "" {
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
 	}

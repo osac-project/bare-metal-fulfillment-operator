@@ -80,6 +80,10 @@ type BareMetalPoolStatus struct {
 	// +kubebuilder:validation:Optional
 	DesiredConfigVersion string `json:"desiredConfigVersion,omitempty"`
 
+	// NetworkClass specifies the network class to use for this pool
+	// +kubebuilder:validation:Optional
+	NetworkClass string `json:"networkClass,omitempty"`
+
 	// Conditions represent the latest available observations of the BareMetalPool state
 	// +kubebuilder:validation:Optional
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
