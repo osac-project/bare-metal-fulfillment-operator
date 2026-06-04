@@ -24,6 +24,9 @@ import (
 )
 
 const (
+	// DefaultHostReadyPollIntervalDuration is the default interval for polling hosts to be ready
+	DefaultHostReadyPollIntervalDuration = 10 * time.Second
+
 	// DefaultHostDeletionPollInterval is the default interval for polling host deletion status
 	DefaultHostDeletionPollIntervalDuration = 5 * time.Second
 

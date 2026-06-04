@@ -46,20 +46,28 @@ import (
 type BareMetalPoolReconciler struct {
 	client.Client
 	Scheme                           *runtime.Scheme
+	HostReadyPollIntervalDuration    time.Duration
 	HostDeletionPollIntervalDuration time.Duration
 	ProvisionJobPollIntervalDuration time.Duration
 	MaxJobHistory                    int
 	provider                         provisioning.ProvisioningProvider
 }
 
+// NewBareMetalPoolReconciler creates a new BareMetalPoolReconciler with the provided configuration.
+// Zero or negative duration values are replaced with defaults.
 func NewBareMetalPoolReconciler(
 	client client.Client,
 	scheme *runtime.Scheme,
 	provider provisioning.ProvisioningProvider,
+	hostReadyPollIntervalDuration time.Duration,
 	hostDeletionPollIntervalDuration time.Duration,
 	provisionJobPollIntervalDuration time.Duration,
 	maxJobHistory int,
 ) *BareMetalPoolReconciler {
+
+	if hostReadyPollIntervalDuration <= 0 {
+		hostReadyPollIntervalDuration = DefaultHostReadyPollIntervalDuration
+	}
 
 	if hostDeletionPollIntervalDuration <= 0 {
 		hostDeletionPollIntervalDuration = DefaultHostDeletionPollIntervalDuration
@@ -76,6 +84,7 @@ func NewBareMetalPoolReconciler(
 	return &BareMetalPoolReconciler{
 		Client:                           client,
 		Scheme:                           scheme,
+		HostReadyPollIntervalDuration:    hostReadyPollIntervalDuration,
 		HostDeletionPollIntervalDuration: hostDeletionPollIntervalDuration,
 		ProvisionJobPollIntervalDuration: provisionJobPollIntervalDuration,
 		MaxJobHistory:                    maxJobHistory,
@@ -142,7 +151,7 @@ func (r *BareMetalPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// handleUpdate processes BareMetalPool creation or specification updates.
+// handleUpdate reconciles the BareMetalPool to match its desired state.
 func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Updating BareMetalPool")
@@ -199,6 +208,14 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		}
 	}
 
+	ready, err := r.checkHostLeasesReady(ctx, bareMetalPool)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !ready {
+		return ctrl.Result{RequeueAfter: r.HostReadyPollIntervalDuration}, nil
+	}
+
 	bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseReady
 	bareMetalPool.SetStatusCondition(
 		v1alpha1.BareMetalPoolConditionTypeReady,
@@ -211,7 +228,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 	return ctrl.Result{}, nil
 }
 
-// validateProfile validates the profile configuration and returns the profile if valid.
+// validateProfile checks the profile exists and has valid parameters.
 func (r *BareMetalPoolReconciler) validateProfile(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (*profile.Profile, bool) {
 	log := logf.FromContext(ctx)
 
@@ -223,6 +240,7 @@ func (r *BareMetalPoolReconciler) validateProfile(ctx context.Context, bareMetal
 	currentProfile := profile.Get(profileName)
 	if currentProfile == nil {
 		log.Info("Profile does not exist", "profile name", profileName)
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 		bareMetalPool.SetStatusCondition(
 			v1alpha1.BareMetalPoolConditionTypeReady,
 			metav1.ConditionFalse,
@@ -234,6 +252,7 @@ func (r *BareMetalPoolReconciler) validateProfile(ctx context.Context, bareMetal
 
 	if !currentProfile.ValidateParameters(bareMetalPool.Spec.Profile.TemplateParameters) {
 		log.Info("TemplateParameters do not match the profile's expected parameters")
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 		bareMetalPool.SetStatusCondition(
 			v1alpha1.BareMetalPoolConditionTypeReady,
 			metav1.ConditionFalse,
@@ -246,7 +265,7 @@ func (r *BareMetalPoolReconciler) validateProfile(ctx context.Context, bareMetal
 	return currentProfile, true
 }
 
-// ensureFinalizer adds the finalizer if not present.
+// ensureFinalizer adds the BareMetalPool finalizer if not already present.
 func (r *BareMetalPoolReconciler) ensureFinalizer(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) error {
 	log := logf.FromContext(ctx)
 
@@ -270,7 +289,7 @@ func (r *BareMetalPoolReconciler) ensureFinalizer(ctx context.Context, bareMetal
 	return nil
 }
 
-// listAndGroupHostLeases lists all HostLeases and groups them by hostType.
+// listAndGroupHostLeases retrieves all HostLeases owned by this pool and groups them by hostType.
 func (r *BareMetalPoolReconciler) listAndGroupHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (map[string][]*v1alpha1.HostLease, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Retrieving HostLeases")
@@ -305,7 +324,7 @@ func (r *BareMetalPoolReconciler) listAndGroupHostLeases(ctx context.Context, ba
 	return currentHostLeases, nil
 }
 
-// reconcileHostLeases scales up or down the HostLeases to match desired state.
+// reconcileHostLeases creates or deletes HostLeases to match the desired replica count per hostType.
 func (r *BareMetalPoolReconciler) reconcileHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, currentHostLeases map[string][]*v1alpha1.HostLease, currentProfile *profile.Profile) error {
 	log := logf.FromContext(ctx)
 	log.Info("Determining desired replica count per host type")
@@ -338,7 +357,7 @@ func (r *BareMetalPoolReconciler) reconcileHostLeases(ctx context.Context, bareM
 	return nil
 }
 
-// scaleUpHostLeases creates additional HostLeases for the specified hostType.
+// scaleUpHostLeases creates the specified number of new HostLeases for the given hostType.
 func (r *BareMetalPoolReconciler) scaleUpHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, delta int32, currentHostLeases map[string][]*v1alpha1.HostLease, currentProfile *profile.Profile) error {
 	log := logf.FromContext(ctx)
 	log.Info(fmt.Sprintf("Scaling up: %s (+%d)", hostType, delta))
@@ -362,7 +381,7 @@ func (r *BareMetalPoolReconciler) scaleUpHostLeases(ctx context.Context, bareMet
 	return nil
 }
 
-// scaleDownHostLeases deletes excess HostLeases for the specified hostType.
+// scaleDownHostLeases deletes HostLeases to reach the desired replica count for the given hostType.
 func (r *BareMetalPoolReconciler) scaleDownHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, replicas int32, currentHostLeases map[string][]*v1alpha1.HostLease) error {
 	log := logf.FromContext(ctx)
 	log.Info(fmt.Sprintf("Scaling down: %s (-%d)", hostType, int32(len(currentHostLeases[hostType]))-replicas))
@@ -392,7 +411,49 @@ func (r *BareMetalPoolReconciler) scaleDownHostLeases(ctx context.Context, bareM
 	return nil
 }
 
-// handleDeletion handles the cleanup when a BareMetalPool is being deleted
+// checkHostLeasesReady returns true if all HostLeases have completed their provisioning templates.
+func (r *BareMetalPoolReconciler) checkHostLeasesReady(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (bool, error) {
+	log := logf.FromContext(ctx)
+	log.Info("Checking if HostLeases have finished their provisioning templates")
+
+	hostLeaseList := &v1alpha1.HostLeaseList{}
+	err := r.List(ctx, hostLeaseList,
+		client.InNamespace(bareMetalPool.Namespace),
+		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
+	)
+	if err != nil {
+		log.Error(err, "Failed to list HostLease CRs")
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Failed to list HostLease CRs",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return false, err
+	}
+
+	for _, hostLease := range hostLeaseList.Items {
+		if !hostLease.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if hostLease.Status.Phase != v1alpha1.HostLeasePhaseReady {
+			log.Info("Not all HostLeases finished their provisioning templates")
+			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
+			bareMetalPool.SetStatusCondition(
+				v1alpha1.BareMetalPoolConditionTypeReady,
+				metav1.ConditionFalse,
+				"Not all HostLeases have finished their provisioning templates",
+				v1alpha1.BareMetalPoolReasonProgressing,
+			)
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// handleDeletion runs deprovisioning workflow and deletes all HostLeases before removing the finalizer.
 func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Deleting BareMetalPool")
@@ -465,8 +526,7 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 	return ctrl.Result{}, nil
 }
 
-// handleDeprovisioning manages the deprovisioning job lifecycle for a BareMetalPool.
-// It triggers deprovisioning if needed and polls job status until completion.
+// handleDeprovisioning triggers and monitors the deprovisioning job until it reaches a terminal state.
 func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -571,7 +631,7 @@ func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bare
 	}
 }
 
-// createHostLeaseCR creates a new HostLease CR owned by this BareMetalPool
+// createHostLeaseCR creates a new HostLease owned by the BareMetalPool with the given hostType and profile.
 func (r *BareMetalPoolReconciler) createHostLeaseCR(
 	ctx context.Context,
 	bareMetalPool *v1alpha1.BareMetalPool,
@@ -646,6 +706,8 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 	return nil
 }
 
+// TriggerProvision initiates the provisioning lifecycle for a BareMetalPool using the specified template.
+// It delegates to the provisioning provider and manages job status tracking with callbacks for success and failure.
 func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -698,7 +760,7 @@ func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMeta
 	)
 }
 
-// updateStatusHostSets updates status.HostSets from the current host leases map.
+// updateStatusHostSets syncs the BareMetalPool status.HostSets field with the current HostLeases.
 func (r *BareMetalPoolReconciler) updateStatusHostSets(bareMetalPool *v1alpha1.BareMetalPool, currentHostLeases map[string][]*v1alpha1.HostLease) {
 	updatedHostSets := []v1alpha1.BareMetalHostSet{}
 	for hostType, hostLeases := range currentHostLeases {
