@@ -34,6 +34,7 @@ import (
 
 	"github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1"
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/inventory"
+	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
 // HostLeaseReconciler reconciles a HostLease object
@@ -139,16 +140,6 @@ func (r *HostLeaseReconciler) handleUpdate(ctx context.Context, hostLease *v1alp
 		return ctrl.Result{}, nil
 	}
 
-	poolID, ok := hostLease.GetPoolID()
-	if !ok {
-		log.Info("HostLease is orphaned so delete it")
-		if err := r.Delete(ctx, hostLease); err != nil {
-			log.Error(err, "Failed to delete HostLease")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
 	if hostLease.Spec.ExternalHostID == "" {
 		matchExpressions := maps.Clone(hostLease.Spec.Selector.HostSelector)
 		if matchExpressions == nil {
@@ -212,10 +203,13 @@ func (r *HostLeaseReconciler) handleUpdate(ctx context.Context, hostLease *v1alp
 		maps.Copy(combinedLabels, hostLease.Spec.InventoryPersistentLabels)
 	}
 
+	if poolID, ok := hostLease.GetPoolID(); ok {
+		combinedLabels[shared.OsacBareMetalPoolIDLabel] = poolID
+	}
+
 	inventoryHost, err := r.InventoryClient.AssignHost(
 		ctx,
 		hostLease.Spec.ExternalHostID,
-		poolID,
 		string(hostLease.UID),
 		combinedLabels,
 	)

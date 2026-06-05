@@ -39,7 +39,7 @@ import (
 // mockInventoryClient implements inventory.Client for testing
 type mockInventoryClient struct {
 	findFreeHostFunc func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error)
-	assignHostFunc   func(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error)
+	assignHostFunc   func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error)
 	unassignHostFunc func(ctx context.Context, inventoryHostID string, labels []string) error
 }
 
@@ -50,9 +50,9 @@ func (m *mockInventoryClient) FindFreeHost(ctx context.Context, matchExpressions
 	return nil, nil
 }
 
-func (m *mockInventoryClient) AssignHost(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error) {
+func (m *mockInventoryClient) AssignHost(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
 	if m.assignHostFunc != nil {
-		return m.assignHostFunc(ctx, inventoryHostID, bareMetalPoolID, bareMetalPoolHostID, labels)
+		return m.assignHostFunc(ctx, inventoryHostID, hostLeaseID, labels)
 	}
 	return nil, nil
 }
@@ -398,9 +398,9 @@ var _ = Describe("HostLease Controller", func() {
 		})
 
 		It("should assign the host", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error) {
+			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
 				Expect(inventoryHostID).To(Equal("inv-host-123"))
-				Expect(bareMetalPoolID).To(Equal(string(testPool.UID)))
+				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
 				return &inventory.Host{
 					InventoryHostID: "inv-host-123",
 					HostClass:       "ironic-mgmt",
@@ -449,7 +449,8 @@ var _ = Describe("HostLease Controller", func() {
 		})
 
 		It("should unset ExternalHostID when host is already assigned to different CR", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error) {
+			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
 				return nil, nil
 			}
 
@@ -472,7 +473,8 @@ var _ = Describe("HostLease Controller", func() {
 		})
 
 		It("should handle AssignHost error", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error) {
+			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
 				return nil, errors.New("assignment failed")
 			}
 
@@ -496,7 +498,8 @@ var _ = Describe("HostLease Controller", func() {
 		})
 
 		It("should handle update error when host is already assigned to different CR", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error) {
+			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
 				return nil, nil // Host already assigned to different CR
 			}
 
@@ -529,7 +532,8 @@ var _ = Describe("HostLease Controller", func() {
 		})
 
 		It("should handle spec update error when setting HostClass", func() {
-			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalPoolID string, bareMetalPoolHostID string, labels map[string]string) (*inventory.Host, error) {
+			mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+				Expect(hostLeaseID).ToNot(BeEmpty(), "hostLeaseID should be set to the HostLease UID")
 				return &inventory.Host{
 					InventoryHostID: "inv-host-123",
 					HostClass:       "ironic-mgmt",
@@ -617,80 +621,6 @@ var _ = Describe("HostLease Controller", func() {
 
 			Expect(updatedHostLease.Spec.ExternalHostID).To(Equal("inv-host-123"))
 			Expect(updatedHostLease.Spec.HostClass).To(Equal("ironic-mgmt"))
-		})
-	})
-
-	Context("When reconciling an orphaned HostLease", func() {
-		BeforeEach(func() {
-			testHostLeaseName = "test-host-orphaned"
-
-			testHostLease = &v1alpha1.HostLease{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "osac.openshift.io/v1alpha1",
-					Kind:       "HostLease",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       testHostLeaseName,
-					Namespace:  testNamespace,
-					Finalizers: []string{HostLeaseInventoryFinalizer},
-					Labels:     map[string]string{},
-				},
-				Spec: v1alpha1.HostLeaseSpec{
-					HostType: "fc430",
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      "ironic",
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
-					TemplateID: "default",
-					PoweredOn:  ptr.To(false),
-				},
-			}
-
-			Expect(k8sClient.Create(ctx, testHostLease)).To(Succeed())
-		})
-
-		It("should delete orphaned host without pool ID", func() {
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.DeletionTimestamp.IsZero()).To(BeFalse())
-		})
-
-		It("should handle delete error for orphaned host", func() {
-			// Mock Delete to fail
-			mockK8sClient.deleteFunc = func(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-				return errors.New("delete failed")
-			}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      testHostLeaseName,
-					Namespace: testNamespace,
-				},
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("delete failed"))
-
-			updatedHostLease := &v1alpha1.HostLease{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      testHostLeaseName,
-				Namespace: testNamespace,
-			}, updatedHostLease)).To(Succeed())
-
-			Expect(updatedHostLease.DeletionTimestamp.IsZero()).To(BeTrue())
 		})
 	})
 

@@ -24,6 +24,9 @@ import (
 )
 
 const (
+	// BareMetalPoolIDLabel is the BareMetalPool ID label to put in the inventory backend
+	BareMetalPoolIDLabel = "bareMetalPoolId"
+
 	// NoFreeHostsPollIntervalDuration is the default polling interval when no free hosts are available
 	DefaultNoFreeHostsPollIntervalDuration = 30 * time.Second
 

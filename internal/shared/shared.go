@@ -23,6 +23,8 @@ const (
 
 	OsacNoopTemplate = "noop"
 
+	OsacBareMetalPoolIDLabel = "bareMetalPoolId"
+
 	OsacDefaultManagedByValue      = "baremetal"
 	OsacDefaultProvisionStateValue = "available"
 )
