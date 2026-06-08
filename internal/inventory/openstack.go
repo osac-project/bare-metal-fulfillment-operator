@@ -19,7 +19,10 @@ package inventory
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math/rand"
+	"net/http"
 	"strings"
 
 	"github.com/gophercloud/gophercloud/v2"
@@ -27,6 +30,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/baremetal/v1/nodes"
 	"github.com/gophercloud/gophercloud/v2/pagination"
 	"github.com/gophercloud/utils/v2/openstack/clientconfig"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
@@ -50,54 +54,118 @@ func init() {
 }
 
 type OpenStackClient struct {
-	client       *gophercloud.ServiceClient
-	HostClass    string
-	NetworkClass string
+	client           *gophercloud.ServiceClient
+	newServiceClient func(ctx context.Context) (*gophercloud.ServiceClient, error)
+	HostClass        string
+	NetworkClass     string
 }
 
 // NewOpenStackClient creates a new OpenStack inventory client
 func NewOpenStackClient(ctx context.Context, cfg *Config) (Client, error) {
-	opts := cfg.Options
+	factory := newServiceClientFactory(cfg)
 
-	var cloud clientconfig.Cloud
-	if openstackOpts, ok := opts["openstack"]; ok {
-		openstackOptsJSON, err := json.Marshal(openstackOpts)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(openstackOptsJSON, &cloud); err != nil {
-			return nil, err
-		}
-	}
-
-	clientOpts := clientconfig.ClientOpts{
-		Cloud:        cloud.Cloud,
-		AuthType:     cloud.AuthType,
-		AuthInfo:     cloud.AuthInfo,
-		RegionName:   cloud.RegionName,
-		EndpointType: cloud.EndpointType,
-	}
-
-	providerClient, err := clientconfig.AuthenticatedClient(ctx, &clientOpts)
+	sc, err := factory(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	ironicClient, err := openstack.NewBareMetalV1(providerClient, gophercloud.EndpointOpts{})
-	if err != nil {
-		return nil, err
-	}
-
-	ironicClient.Microversion = "latest"
 
 	return &OpenStackClient{
-		client:       ironicClient,
-		HostClass:    cfg.HostClass,
-		NetworkClass: cfg.NetworkClass,
+		client:           sc,
+		newServiceClient: factory,
+		HostClass:        cfg.HostClass,
+		NetworkClass:     cfg.NetworkClass,
 	}, nil
 }
 
+func newServiceClientFactory(cfg *Config) func(ctx context.Context) (*gophercloud.ServiceClient, error) {
+	opts := cfg.Options
+
+	return func(ctx context.Context) (*gophercloud.ServiceClient, error) {
+		var cloud clientconfig.Cloud
+		if openstackOpts, ok := opts["openstack"]; ok {
+			openstackOptsJSON, err := json.Marshal(openstackOpts)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(openstackOptsJSON, &cloud); err != nil {
+				return nil, err
+			}
+		}
+
+		if cloud.AuthInfo == nil {
+			cloud.AuthInfo = &clientconfig.AuthInfo{}
+		}
+		cloud.AuthInfo.AllowReauth = true
+
+		clientOpts := clientconfig.ClientOpts{
+			Cloud:        cloud.Cloud,
+			AuthType:     cloud.AuthType,
+			AuthInfo:     cloud.AuthInfo,
+			RegionName:   cloud.RegionName,
+			EndpointType: cloud.EndpointType,
+		}
+
+		providerClient, err := clientconfig.AuthenticatedClient(ctx, &clientOpts)
+		if err != nil {
+			return nil, err
+		}
+
+		ironicClient, err := openstack.NewBareMetalV1(providerClient, gophercloud.EndpointOpts{})
+		if err != nil {
+			return nil, err
+		}
+
+		ironicClient.Microversion = "latest"
+
+		return ironicClient, nil
+	}
+}
+
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if gophercloud.ResponseCodeIs(err, http.StatusUnauthorized) {
+		return true
+	}
+	var errReauth *gophercloud.ErrUnableToReauthenticate
+	if errors.As(err, &errReauth) {
+		return true
+	}
+	var errAfterReauth *gophercloud.ErrErrorAfterReauthentication
+	return errors.As(err, &errAfterReauth)
+}
+
+func (c *OpenStackClient) reconnect(ctx context.Context) error {
+	log := ctrllog.FromContext(ctx)
+	log.Info("recreating ironic service client after authentication failure")
+	sc, err := c.newServiceClient(ctx)
+	if err != nil {
+		log.Error(err, "failed to recreate ironic service client")
+		return fmt.Errorf("failed to recreate baremetal client: %w", err)
+	}
+	c.client = sc
+	log.Info("ironic service client reconnected successfully", "endpoint", sc.Endpoint)
+	return nil
+}
+
 func (c *OpenStackClient) FindFreeHost(ctx context.Context, matchExpressions map[string]string) (*Host, error) {
+	host, err := c.findFreeHost(ctx, matchExpressions)
+	if err != nil && isAuthError(err) {
+		log := ctrllog.FromContext(ctx)
+		log.Info("auth error on FindFreeHost, attempting reconnect", "error", err)
+		if reconnErr := c.reconnect(ctx); reconnErr != nil {
+			return nil, fmt.Errorf("find free host: reconnect failed: %w", reconnErr)
+		}
+		host, err = c.findFreeHost(ctx, matchExpressions)
+		if err != nil {
+			return nil, fmt.Errorf("find free host after reconnect: %w", err)
+		}
+	}
+	return host, err
+}
+
+func (c *OpenStackClient) findFreeHost(ctx context.Context, matchExpressions map[string]string) (*Host, error) {
 	listOpts := nodes.ListOpts{
 		Fields: []string{
 			"uuid",
@@ -179,6 +247,22 @@ func (c *OpenStackClient) FindFreeHost(ctx context.Context, matchExpressions map
 }
 
 func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string, poolID string, hostID string, labels map[string]string) (*Host, error) {
+	host, err := c.assignHost(ctx, inventoryHostID, poolID, hostID, labels)
+	if err != nil && isAuthError(err) {
+		log := ctrllog.FromContext(ctx)
+		log.Info("auth error on AssignHost, attempting reconnect", "inventoryHostID", inventoryHostID, "error", err)
+		if reconnErr := c.reconnect(ctx); reconnErr != nil {
+			return nil, fmt.Errorf("assign host %s: reconnect failed: %w", inventoryHostID, reconnErr)
+		}
+		host, err = c.assignHost(ctx, inventoryHostID, poolID, hostID, labels)
+		if err != nil {
+			return nil, fmt.Errorf("assign host %s after reconnect: %w", inventoryHostID, err)
+		}
+	}
+	return host, err
+}
+
+func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string, poolID string, hostID string, labels map[string]string) (*Host, error) {
 	node, err := nodes.Get(ctx, c.client, inventoryHostID).Extract()
 	if err != nil {
 		return nil, err
@@ -256,6 +340,22 @@ func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string
 }
 
 func (c *OpenStackClient) UnassignHost(ctx context.Context, inventoryHostID string, labels []string) error {
+	err := c.unassignHost(ctx, inventoryHostID, labels)
+	if err != nil && isAuthError(err) {
+		log := ctrllog.FromContext(ctx)
+		log.Info("auth error on UnassignHost, attempting reconnect", "inventoryHostID", inventoryHostID, "error", err)
+		if reconnErr := c.reconnect(ctx); reconnErr != nil {
+			return fmt.Errorf("unassign host %s: reconnect failed: %w", inventoryHostID, reconnErr)
+		}
+		err = c.unassignHost(ctx, inventoryHostID, labels)
+		if err != nil {
+			return fmt.Errorf("unassign host %s after reconnect: %w", inventoryHostID, err)
+		}
+	}
+	return err
+}
+
+func (c *OpenStackClient) unassignHost(ctx context.Context, inventoryHostID string, labels []string) error {
 	// Get current node state to check what labels exist
 	node, err := nodes.Get(ctx, c.client, inventoryHostID).Extract()
 	if err != nil {
