@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/gophercloud/gophercloud/v2"
@@ -399,6 +400,57 @@ func (c *OpenStackClient) unassignHost(ctx context.Context, inventoryHostID stri
 
 	_, err = nodes.Update(ctx, c.client, inventoryHostID, updateOpts).Extract()
 	return err
+}
+
+func (c *OpenStackClient) GetHostTypes(ctx context.Context) ([]string, error) {
+	hostTypes, err := c.getHostTypes(ctx)
+	if err != nil && isAuthError(err) {
+		log := ctrllog.FromContext(ctx)
+		log.Info("auth error on GetHostTypes, attempting reconnect")
+		if reconnErr := c.reconnect(ctx); reconnErr != nil {
+			return nil, fmt.Errorf("get host types: reconnect failed: %w", reconnErr)
+		}
+		hostTypes, err = c.getHostTypes(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get host types after reconnect: %w", err)
+		}
+	}
+	return hostTypes, err
+}
+
+func (c *OpenStackClient) getHostTypes(ctx context.Context) ([]string, error) {
+	listOpts := nodes.ListOpts{
+		Fields: []string{
+			"resource_class",
+		},
+	}
+
+	hostTypeSet := make(map[string]struct{})
+	err := nodes.List(c.client, listOpts).EachPage(ctx, func(ctx context.Context, page pagination.Page) (bool, error) {
+		nodeList, err := nodes.ExtractNodes(page)
+		if err != nil {
+			return false, err
+		}
+
+		for _, node := range nodeList {
+			if node.ResourceClass != "" {
+				hostTypeSet[node.ResourceClass] = struct{}{}
+			}
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	hostTypes := make([]string, 0, len(hostTypeSet))
+	for hostType := range hostTypeSet {
+		hostTypes = append(hostTypes, hostType)
+	}
+	sort.Strings(hostTypes)
+
+	return hostTypes, nil
 }
 
 func escapeJSONPointerToken(s string) string {
