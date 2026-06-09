@@ -3,7 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/osac.openshift.io_baremetalpools.yaml
-- bases/osac.openshift.io_hostleases.yaml
+- bases/osac.openshift.io_baremetalinstances.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

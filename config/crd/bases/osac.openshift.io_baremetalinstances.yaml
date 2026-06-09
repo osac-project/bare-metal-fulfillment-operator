@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: hostleases.osac.openshift.io
+  name: baremetalinstances.osac.openshift.io
 spec:
   group: osac.openshift.io
   names:
-    kind: HostLease
-    listKind: HostLeaseList
-    plural: hostleases
+    kind: BareMetalInstance
+    listKind: BareMetalInstanceList
+    plural: baremetalinstances
     shortNames:
-    - hl
-    singular: hostlease
+    - bmi
+    singular: baremetalinstance
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -38,7 +38,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: HostLease is the Schema for the hostleases API.
+        description: BareMetalInstance is the Schema for the baremetalinstances API.
         properties:
           apiVersion:
             description: |-
@@ -58,7 +58,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: HostLeaseSpec defines the desired state of HostLease.
+            description: BareMetalInstanceSpec defines the desired state of BareMetalInstance.
             properties:
               externalHostID:
                 description: ExternalHostID is the host ID from external inventory
@@ -81,7 +81,7 @@ spec:
                   type: string
                 description: |-
                   InventoryLabels are labels to be applied to the host in the inventory system.
-                  These labels are non-persistent and will be removed when the HostLease is deleted.
+                  These labels are non-persistent and will be removed when the BareMetalInstance is deleted.
                 type: object
                 x-kubernetes-validations:
                 - message: field is immutable
@@ -91,7 +91,7 @@ spec:
                   type: string
                 description: |-
                   InventoryPersistentLabels are labels to be applied to the host in the inventory system.
-                  These labels are persistent and will remain on the host after the HostLease is deleted.
+                  These labels are persistent and will remain on the host after the BareMetalInstance is deleted.
                   Persistent labels override InventoryLabels with the same key.
                 type: object
                 x-kubernetes-validations:
@@ -139,7 +139,7 @@ spec:
             - templateID
             type: object
           status:
-            description: HostLeaseStatus defines the observed state of HostLease.
+            description: BareMetalInstanceStatus defines the observed state of BareMetalInstance.
             properties:
               conditions:
                 description: Conditions holds an array of metav1.Condition describing
@@ -267,7 +267,7 @@ spec:
                 type: array
               phase:
                 description: Phase provides a single-value overview of the state of
-                  the HostLease
+                  the BareMetalInstance
                 enum:
                 - Allocating
                 - Progressing
@@ -276,7 +276,7 @@ spec:
                 - Deleting
                 type: string
               poweredOn:
-                description: PoweredOn is the current power state.
+                description: PoweredOn is the observed power state.
                 type: boolean
             type: object
         type: object

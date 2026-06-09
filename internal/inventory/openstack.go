@@ -44,8 +44,8 @@ const (
 	OSACPrefix = "osac_"
 
 	// Label keys within osac_labels map
-	HostLeaseIDLabel = "hostLeaseId"
-	ManagedByLabel   = "managedBy"
+	BareMetalInstanceIDLabel = "bareMetalInstanceId"
+	ManagedByLabel           = "managedBy"
 )
 
 func init() {
@@ -201,9 +201,9 @@ func (c *OpenStackClient) findFreeHost(ctx context.Context, matchExpressions map
 		})
 
 		for _, node := range nodes {
-			// Check if host is already assigned by looking for hostLeaseId labels
-			hostLeaseID, _ := getNestedLabel(node, HostLeaseIDLabel)
-			if hostLeaseID != "" {
+			// Check if host is already assigned by looking for bareMetalInstanceId labels
+			bareMetalInstanceID, _ := getNestedLabel(node, BareMetalInstanceIDLabel)
+			if bareMetalInstanceID != "" {
 				continue
 			}
 			bareMetalPoolID, _ := getNestedLabel(node, shared.OsacBareMetalPoolIDLabel)
@@ -222,15 +222,15 @@ func (c *OpenStackClient) findFreeHost(ctx context.Context, matchExpressions map
 			}
 
 			foundHost = &Host{
-				BareMetalPoolID: bareMetalPoolID,
-				HostLeaseID:     hostLeaseID,
-				InventoryHostID: node.UUID,
-				Name:            node.Name,
-				HostType:        node.ResourceClass,
-				HostClass:       c.HostClass,
-				NetworkClass:    c.NetworkClass,
-				ProvisionState:  node.ProvisionState,
-				ManagedBy:       managedBy,
+				BareMetalPoolID:     bareMetalPoolID,
+				BareMetalInstanceID: bareMetalInstanceID,
+				InventoryHostID:     node.UUID,
+				Name:                node.Name,
+				HostType:            node.ResourceClass,
+				HostClass:           c.HostClass,
+				NetworkClass:        c.NetworkClass,
+				ProvisionState:      node.ProvisionState,
+				ManagedBy:           managedBy,
 			}
 			return false, nil
 		}
@@ -244,15 +244,15 @@ func (c *OpenStackClient) findFreeHost(ctx context.Context, matchExpressions map
 	return foundHost, nil
 }
 
-func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*Host, error) {
-	host, err := c.assignHost(ctx, inventoryHostID, hostLeaseID, labels)
+func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*Host, error) {
+	host, err := c.assignHost(ctx, inventoryHostID, bareMetalInstanceID, labels)
 	if err != nil && isAuthError(err) {
 		log := ctrllog.FromContext(ctx)
 		log.Info("auth error on AssignHost, attempting reconnect", "inventoryHostID", inventoryHostID, "error", err)
 		if reconnErr := c.reconnect(ctx); reconnErr != nil {
 			return nil, fmt.Errorf("assign host %s: reconnect failed: %w", inventoryHostID, reconnErr)
 		}
-		host, err = c.assignHost(ctx, inventoryHostID, hostLeaseID, labels)
+		host, err = c.assignHost(ctx, inventoryHostID, bareMetalInstanceID, labels)
 		if err != nil {
 			return nil, fmt.Errorf("assign host %s after reconnect: %w", inventoryHostID, err)
 		}
@@ -260,12 +260,12 @@ func (c *OpenStackClient) AssignHost(ctx context.Context, inventoryHostID string
 	return host, err
 }
 
-func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*Host, error) {
+func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*Host, error) {
 	if inventoryHostID == "" {
 		return nil, fmt.Errorf("invalid input: inventoryHostID is empty")
 	}
-	if hostLeaseID == "" {
-		return nil, fmt.Errorf("invalid input: hostLeaseID is empty")
+	if bareMetalInstanceID == "" {
+		return nil, fmt.Errorf("invalid input: bareMetalInstanceID is empty")
 	}
 
 	node, err := nodes.Get(ctx, c.client, inventoryHostID).Extract()
@@ -273,8 +273,8 @@ func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string
 		return nil, err
 	}
 
-	currentHostLeaseID, ok := getNestedLabel(node, HostLeaseIDLabel)
-	if ok && currentHostLeaseID != "" && currentHostLeaseID != hostLeaseID {
+	currentBareMetalInstanceID, ok := getNestedLabel(node, BareMetalInstanceIDLabel)
+	if ok && currentBareMetalInstanceID != "" && currentBareMetalInstanceID != bareMetalInstanceID {
 		return nil, nil
 	}
 
@@ -297,8 +297,8 @@ func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string
 	updateOpts = append(updateOpts,
 		nodes.UpdateOperation{
 			Op:    nodes.AddOp,
-			Path:  "/extra/osac_labels/" + escapeJSONPointerToken(HostLeaseIDLabel),
-			Value: hostLeaseID,
+			Path:  "/extra/osac_labels/" + escapeJSONPointerToken(BareMetalInstanceIDLabel),
+			Value: bareMetalInstanceID,
 		},
 	)
 
@@ -327,15 +327,15 @@ func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string
 	}
 
 	return &Host{
-		BareMetalPoolID: bareMetalPoolID,
-		HostLeaseID:     hostLeaseID,
-		InventoryHostID: node.UUID,
-		Name:            node.Name,
-		HostType:        node.ResourceClass,
-		HostClass:       c.HostClass,
-		NetworkClass:    c.NetworkClass,
-		ProvisionState:  node.ProvisionState,
-		ManagedBy:       managedBy,
+		BareMetalPoolID:     bareMetalPoolID,
+		BareMetalInstanceID: bareMetalInstanceID,
+		InventoryHostID:     node.UUID,
+		Name:                node.Name,
+		HostType:            node.ResourceClass,
+		HostClass:           c.HostClass,
+		NetworkClass:        c.NetworkClass,
+		ProvisionState:      node.ProvisionState,
+		ManagedBy:           managedBy,
 	}, nil
 }
 
@@ -370,8 +370,8 @@ func (c *OpenStackClient) unassignHost(ctx context.Context, inventoryHostID stri
 	// Build list of labels to remove: hostId and user-provided labels
 	// Note: managedBy is kept as a persistent label
 	labelsToRemove := make([]string, 0, 1+len(labels))
-	seen := map[string]struct{}{HostLeaseIDLabel: {}}
-	labelsToRemove = append(labelsToRemove, HostLeaseIDLabel)
+	seen := map[string]struct{}{BareMetalInstanceIDLabel: {}}
+	labelsToRemove = append(labelsToRemove, BareMetalInstanceIDLabel)
 	for _, label := range labels {
 		if _, ok := seen[label]; ok {
 			continue

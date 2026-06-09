@@ -60,8 +60,8 @@ var (
 
 const (
 	// Manager level configuration
-	envBareMetalFulfillmentNamespace   = "OSAC_BARE_METAL_FULFILLMENT_NAMESPACE"
-	envHostLeaseMaxConcurrentReconcile = "OSAC_HOSTLEASE_MAX_CONCURRENT_RECONCILES"
+	envBareMetalFulfillmentNamespace           = "OSAC_BARE_METAL_FULFILLMENT_NAMESPACE"
+	envBareMetalInstanceMaxConcurrentReconcile = "OSAC_BAREMETALINSTANCE_MAX_CONCURRENT_RECONCILES"
 
 	// Controller level configuration
 	envInventoryConfigPath  = "OSAC_INVENTORY_CONFIG_PATH"
@@ -236,7 +236,7 @@ func main() {
 						bareMetalFulfillmentNamespace: {},
 					},
 				},
-				&osacv1alpha1.HostLease{}: {
+				&osacv1alpha1.BareMetalInstance{}: {
 					Namespaces: map[string]cache.Config{
 						bareMetalFulfillmentNamespace: {},
 					},
@@ -291,8 +291,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := setupHostLeaseController(ctx, mgr, provisioningProvider); err != nil {
-		setupLog.Error(err, "unable to setup controller", "controller", "HostLease")
+	if err := setupBareMetalInstanceController(ctx, mgr, provisioningProvider); err != nil {
+		setupLog.Error(err, "unable to setup controller", "controller", "BareMetalInstance")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
@@ -391,8 +391,8 @@ func setupBareMetalPoolController(mgr ctrl.Manager, provisioningProvider provisi
 	return nil
 }
 
-// setupHostLeaseController registers the HostLease controller.
-func setupHostLeaseController(
+// setupBareMetalInstanceController registers the BareMetalInstance controller.
+func setupBareMetalInstanceController(
 	ctx context.Context,
 	mgr ctrl.Manager,
 	provisioningProvider provisioning.ProvisioningProvider,
@@ -454,12 +454,12 @@ func setupHostLeaseController(
 		controller.DefaultProvisionPollIntervalDuration,
 	)
 	maxConcurrentReconciles := helpers.GetEnvWithDefault(
-		envHostLeaseMaxConcurrentReconcile,
+		envBareMetalInstanceMaxConcurrentReconcile,
 		1,
 		func(v int) bool { return v > 0 },
 	)
 
-	if err := controller.NewHostLeaseReconciler(
+	if err := controller.NewBareMetalInstanceReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		inventoryClient,
@@ -470,7 +470,7 @@ func setupHostLeaseController(
 		managementRecheckInterval,
 		provisionPollInterval,
 	).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
-		return fmt.Errorf("hostlease controller: %w", err)
+		return fmt.Errorf("baremetalinstance controller: %w", err)
 	}
 	return nil
 }

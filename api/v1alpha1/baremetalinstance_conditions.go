@@ -21,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func (h *HostLease) SetStatusCondition(conditionType HostLeaseConditionType, status metav1.ConditionStatus, reason, message string) bool {
+func (h *BareMetalInstance) SetStatusCondition(conditionType BareMetalInstanceConditionType, status metav1.ConditionStatus, reason, message string) bool {
 	condition := metav1.Condition{
 		Type:    string(conditionType),
 		Status:  status,
@@ -34,22 +34,22 @@ func (h *HostLease) SetStatusCondition(conditionType HostLeaseConditionType, sta
 	return apimeta.SetStatusCondition(&h.Status.Conditions, condition)
 }
 
-func (h *HostLease) GetStatusCondition(conditionType HostLeaseConditionType) *metav1.Condition {
+func (h *BareMetalInstance) GetStatusCondition(conditionType BareMetalInstanceConditionType) *metav1.Condition {
 	if h.Status.Conditions == nil {
 		return nil
 	}
 	return apimeta.FindStatusCondition(h.Status.Conditions, string(conditionType))
 }
 
-func (h *HostLease) IsStatusConditionTrue(conditionType HostLeaseConditionType) bool {
+func (h *BareMetalInstance) IsStatusConditionTrue(conditionType BareMetalInstanceConditionType) bool {
 	return apimeta.IsStatusConditionTrue(h.Status.Conditions, string(conditionType))
 }
 
-func (h *HostLease) IsStatusConditionFalse(conditionType HostLeaseConditionType) bool {
+func (h *BareMetalInstance) IsStatusConditionFalse(conditionType BareMetalInstanceConditionType) bool {
 	return apimeta.IsStatusConditionFalse(h.Status.Conditions, string(conditionType))
 }
 
-func (h *HostLease) IsStatusConditionUnknown(conditionType HostLeaseConditionType) bool {
+func (h *BareMetalInstance) IsStatusConditionUnknown(conditionType BareMetalInstanceConditionType) bool {
 	cond := h.GetStatusCondition(conditionType)
 	return cond == nil || cond.Status == metav1.ConditionUnknown
 }

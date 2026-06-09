@@ -221,7 +221,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(k8sClient.Create(ctx, testPool)).To(Succeed())
 		})
 
-		It("should create HostLease CRs for the specified replicas", func() {
+		It("should create BareMetalInstance CRs for the specified replicas", func() {
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      testPoolName,
@@ -236,13 +236,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(3))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(3))
 		})
 
 		It("should set Ready condition to True", func() {
@@ -260,22 +260,22 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
-			// Verify pool is NOT ready yet (HostLeases don't have ProvisionTemplateComplete)
+			// Verify pool is NOT ready yet (BareMetalInstances don't have ProvisionTemplateComplete)
 			condition := updatedPool.GetStatusCondition(osacv1alpha1.BareMetalPoolConditionTypeReady)
 			if condition != nil {
 				Expect(condition.Status).NotTo(Equal(metav1.ConditionTrue))
 				Expect(condition.Reason).NotTo(Equal(osacv1alpha1.BareMetalPoolReasonReady))
 			}
 
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			for i := range hostLeaseList.Items {
-				hostLeaseList.Items[i].Status.Phase = osacv1alpha1.HostLeasePhaseReady
-				Expect(k8sClient.Status().Update(ctx, &hostLeaseList.Items[i])).To(Succeed())
+			for i := range bareMetalInstanceList.Items {
+				bareMetalInstanceList.Items[i].Status.Phase = osacv1alpha1.BareMetalInstancePhaseReady
+				Expect(k8sClient.Status().Update(ctx, &bareMetalInstanceList.Items[i])).To(Succeed())
 			}
 
 			// Reconcile again to check readiness
@@ -298,7 +298,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonReady))
 		})
 
-		It("should verify HostLease CRs have correct labels and owner references", func() {
+		It("should verify BareMetalInstance CRs have correct labels and owner references", func() {
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      testPoolName,
@@ -313,20 +313,20 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			for _, hostLease := range hostLeaseList.Items {
-				Expect(hostLease.Labels[BareMetalPoolLabelKey]).To(Equal(string(updatedPool.UID)))
-				Expect(hostLease.Labels[HostTypeLabelKey]).To(Equal("fc430"))
-				Expect(hostLease.Spec.HostType).To(Equal("fc430"))
-				Expect(hostLease.OwnerReferences).To(HaveLen(1))
-				Expect(hostLease.OwnerReferences[0].Name).To(Equal(updatedPool.Name))
-				Expect(hostLease.OwnerReferences[0].Kind).To(Equal("BareMetalPool"))
+			for _, bareMetalInstance := range bareMetalInstanceList.Items {
+				Expect(bareMetalInstance.Labels[BareMetalPoolLabelKey]).To(Equal(string(updatedPool.UID)))
+				Expect(bareMetalInstance.Labels[HostTypeLabelKey]).To(Equal("fc430"))
+				Expect(bareMetalInstance.Spec.HostType).To(Equal("fc430"))
+				Expect(bareMetalInstance.OwnerReferences).To(HaveLen(1))
+				Expect(bareMetalInstance.OwnerReferences[0].Name).To(Equal(updatedPool.Name))
+				Expect(bareMetalInstance.OwnerReferences[0].Kind).To(Equal("BareMetalPool"))
 			}
 		})
 
@@ -350,7 +350,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(updatedPool.Status.HostSets[0].Replicas).To(Equal(int32(3)))
 		})
 
-		It("should handle error when creating HostLease CR fails", func() {
+		It("should handle error when creating BareMetalInstance CR fails", func() {
 			// Update pool to have 5 replicas instead of 3
 			updatedPool := &osacv1alpha1.BareMetalPool{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -361,13 +361,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(k8sClient.Update(ctx, updatedPool)).To(Succeed())
 
 			// Mock create to succeed for first 2 host leases, then fail
-			hostLeasesCreated := 0
+			bareMetalInstancesCreated := 0
 			mockK8sClient.createFunc = func(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*osacv1alpha1.HostLease); ok {
-					if hostLeasesCreated >= 2 {
+				if _, ok := obj.(*osacv1alpha1.BareMetalInstance); ok {
+					if bareMetalInstancesCreated >= 2 {
 						return errors.New("create host lease failed")
 					}
-					hostLeasesCreated++
+					bareMetalInstancesCreated++
 					return mockK8sClient.Client.Create(ctx, obj, opts...)
 				}
 				return mockK8sClient.Client.Create(ctx, obj, opts...)
@@ -388,13 +388,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			}, updatedPool)).To(Succeed())
 
 			// Verify only 2 host leases were created
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(2))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(2))
 
 			// Verify status reflects the actual number of host leases created (2, not 5)
 			Expect(updatedPool.Status.HostSets).To(HaveLen(1))
@@ -406,7 +406,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
-			Expect(condition.Message).To(Equal("Failed to create HostLease CR"))
+			Expect(condition.Message).To(Equal("Failed to create BareMetalInstance CR"))
 		})
 	})
 
@@ -441,7 +441,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should delete HostLease CRs when replicas are reduced", func() {
+		It("should delete BareMetalInstance CRs when replicas are reduced", func() {
 			updatedPool := &osacv1alpha1.BareMetalPool{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      testPoolName,
@@ -459,16 +459,16 @@ var _ = Describe("BareMetalPool Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(1))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(1))
 		})
 
-		It("should handle error when deleting HostLease CR during scale-down", func() {
+		It("should handle error when deleting BareMetalInstance CR during scale-down", func() {
 			updatedPool := &osacv1alpha1.BareMetalPool{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      testPoolName,
@@ -480,13 +480,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(k8sClient.Update(ctx, updatedPool)).To(Succeed())
 
 			// Mock delete to fail after first successful deletion
-			hostLeasesDeleted := 0
+			bareMetalInstancesDeleted := 0
 			mockK8sClient.deleteFunc = func(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-				if _, ok := obj.(*osacv1alpha1.HostLease); ok {
-					if hostLeasesDeleted >= 1 {
+				if _, ok := obj.(*osacv1alpha1.BareMetalInstance); ok {
+					if bareMetalInstancesDeleted >= 1 {
 						return errors.New("delete host lease failed")
 					}
-					hostLeasesDeleted++
+					bareMetalInstancesDeleted++
 					return mockK8sClient.Client.Delete(ctx, obj, opts...)
 				}
 				return mockK8sClient.Client.Delete(ctx, obj, opts...)
@@ -507,13 +507,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			}, updatedPool)).To(Succeed())
 
 			// Verify only 1 host lease was deleted (2 remain)
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(2))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(2))
 
 			// Verify status reflects actual host lease count (2, not 1)
 			Expect(updatedPool.Status.HostSets).To(HaveLen(1))
@@ -524,7 +524,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
-			Expect(condition.Message).To(Equal("Failed to delete HostLease CR"))
+			Expect(condition.Message).To(Equal("Failed to delete BareMetalInstance CR"))
 		})
 	})
 
@@ -559,7 +559,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should create additional HostLease CRs when replicas are increased", func() {
+		It("should create additional BareMetalInstance CRs when replicas are increased", func() {
 			updatedPool := &osacv1alpha1.BareMetalPool{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      testPoolName,
@@ -577,13 +577,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(5))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(5))
 
 			// Verify status is updated
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -594,7 +594,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(updatedPool.Status.HostSets[0].Replicas).To(Equal(int32(5)))
 		})
 
-		It("should handle error when creating HostLease CR during scale-up", func() {
+		It("should handle error when creating BareMetalInstance CR during scale-up", func() {
 			updatedPool := &osacv1alpha1.BareMetalPool{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      testPoolName,
@@ -606,13 +606,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(k8sClient.Update(ctx, updatedPool)).To(Succeed())
 
 			// Mock create to succeed for first 2 additional host leases, then fail
-			hostLeasesCreated := 0
+			bareMetalInstancesCreated := 0
 			mockK8sClient.createFunc = func(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*osacv1alpha1.HostLease); ok {
-					if hostLeasesCreated >= 2 {
+				if _, ok := obj.(*osacv1alpha1.BareMetalInstance); ok {
+					if bareMetalInstancesCreated >= 2 {
 						return errors.New("create host lease failed")
 					}
-					hostLeasesCreated++
+					bareMetalInstancesCreated++
 					return mockK8sClient.Client.Create(ctx, obj, opts...)
 				}
 				return mockK8sClient.Client.Create(ctx, obj, opts...)
@@ -633,13 +633,13 @@ var _ = Describe("BareMetalPool Controller", func() {
 			}, updatedPool)).To(Succeed())
 
 			// Verify only 2 additional host leases were created (4 total)
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(4))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(4))
 
 			// Verify status reflects the actual number of host leases (4, not 5)
 			Expect(updatedPool.Status.HostSets).To(HaveLen(1))
@@ -651,7 +651,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
-			Expect(condition.Message).To(Equal("Failed to create HostLease CR"))
+			Expect(condition.Message).To(Equal("Failed to create BareMetalInstance CR"))
 		})
 
 		It("should scale up a new hostType from zero (adding new hostType)", func() {
@@ -677,8 +677,8 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify original fc430 host leases still exist (2)
-			fc430HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, fc430HostLeases,
+			fc430BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, fc430BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -686,11 +686,11 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fc430HostLeases.Items).To(HaveLen(2))
+			Expect(fc430BareMetalInstances.Items).To(HaveLen(2))
 
 			// Verify new h100 host leases were created (3)
-			h100HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, h100HostLeases,
+			h100BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, h100BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -698,7 +698,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(h100HostLeases.Items).To(HaveLen(3))
+			Expect(h100BareMetalInstances.Items).To(HaveLen(3))
 
 			// Verify status is updated with both hostTypes
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -750,8 +750,8 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
-			fc430HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, fc430HostLeases,
+			fc430BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, fc430BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -759,10 +759,10 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fc430HostLeases.Items).To(HaveLen(2))
+			Expect(fc430BareMetalInstances.Items).To(HaveLen(2))
 
-			h100HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, h100HostLeases,
+			h100BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, h100BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -770,7 +770,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(h100HostLeases.Items).To(HaveLen(3))
+			Expect(h100BareMetalInstances.Items).To(HaveLen(3))
 		})
 
 		It("should delete host leases when a host class is removed", func() {
@@ -804,8 +804,8 @@ var _ = Describe("BareMetalPool Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			h100HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, h100HostLeases,
+			h100BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, h100BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -813,7 +813,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(h100HostLeases.Items).To(BeEmpty())
+			Expect(h100BareMetalInstances.Items).To(BeEmpty())
 		})
 
 		It("should handle error when deleting host leases for removed host class", func() {
@@ -842,14 +842,14 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(k8sClient.Update(ctx, updatedPool)).To(Succeed())
 
 			// Mock delete to fail when deleting h100 host leases (after first deletion)
-			hostLeasesDeleted := 0
+			bareMetalInstancesDeleted := 0
 			mockK8sClient.deleteFunc = func(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-				if hostLease, ok := obj.(*osacv1alpha1.HostLease); ok {
-					if hostLease.Labels[HostTypeLabelKey] == "h100" {
-						if hostLeasesDeleted >= 1 {
+				if bareMetalInstance, ok := obj.(*osacv1alpha1.BareMetalInstance); ok {
+					if bareMetalInstance.Labels[HostTypeLabelKey] == "h100" {
+						if bareMetalInstancesDeleted >= 1 {
 							return errors.New("delete host lease failed")
 						}
-						hostLeasesDeleted++
+						bareMetalInstancesDeleted++
 					}
 					return mockK8sClient.Client.Delete(ctx, obj, opts...)
 				}
@@ -871,8 +871,8 @@ var _ = Describe("BareMetalPool Controller", func() {
 			}, updatedPool)).To(Succeed())
 
 			// Verify fc430 host leases still exist
-			fc430HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, fc430HostLeases,
+			fc430BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, fc430BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -880,11 +880,11 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fc430HostLeases.Items).To(HaveLen(2))
+			Expect(fc430BareMetalInstances.Items).To(HaveLen(2))
 
 			// Verify some h100 host leases were deleted but not all (2 remain)
-			h100HostLeases := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, h100HostLeases,
+			h100BareMetalInstances := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, h100BareMetalInstances,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{
 					BareMetalPoolLabelKey: string(updatedPool.UID),
@@ -892,7 +892,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 				},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(h100HostLeases.Items).To(HaveLen(2))
+			Expect(h100BareMetalInstances.Items).To(HaveLen(2))
 
 			// Verify status reflects both host classes still exist
 			Expect(updatedPool.Status.HostSets).To(HaveLen(2))
@@ -902,7 +902,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
-			Expect(condition.Message).To(Equal("Failed to delete HostLease CR"))
+			Expect(condition.Message).To(Equal("Failed to delete BareMetalInstance CR"))
 		})
 	})
 
@@ -956,14 +956,14 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(HaveLen(1))
-			Expect(hostLeaseList.Items[0].Spec.TemplateParameters).To(Equal(`{"key":"value"}`))
+			Expect(bareMetalInstanceList.Items).To(HaveLen(1))
+			Expect(bareMetalInstanceList.Items[0].Spec.TemplateParameters).To(Equal(`{"key":"value"}`))
 		})
 	})
 
@@ -1015,7 +1015,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(readyCondition.Message).To(Equal("Profile does not exist"))
 		})
 
-		It("should not create any HostLeases when profile doesn't exist", func() {
+		It("should not create any BareMetalInstances when profile doesn't exist", func() {
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      testPoolName,
@@ -1030,14 +1030,14 @@ var _ = Describe("BareMetalPool Controller", func() {
 				Namespace: testNamespace,
 			}, updatedPool)).To(Succeed())
 
-			// Verify no HostLeases were created
-			hostLeaseList := &osacv1alpha1.HostLeaseList{}
-			err = k8sClient.List(ctx, hostLeaseList,
+			// Verify no BareMetalInstances were created
+			bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+			err = k8sClient.List(ctx, bareMetalInstanceList,
 				client.InNamespace(testNamespace),
 				client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
 			)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hostLeaseList.Items).To(BeEmpty())
+			Expect(bareMetalInstanceList.Items).To(BeEmpty())
 		})
 	})
 

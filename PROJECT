@@ -26,7 +26,7 @@ resources:
   controller: true
   domain: openshift.io
   group: osac
-  kind: HostLease
+  kind: BareMetalInstance
   path: github.com/osac-project/bare-metal-fulfillment-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

@@ -95,7 +95,7 @@ func NewBareMetalPoolReconciler(
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=baremetalpools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=baremetalpools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=baremetalpools/finalizers,verbs=update
-// +kubebuilder:rbac:groups=osac.openshift.io,resources=hostleases,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=osac.openshift.io,resources=baremetalinstances,verbs=get;list;watch;create;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the pool closer to the desired state.
@@ -134,7 +134,7 @@ func (r *BareMetalPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.BareMetalPool{}).
 		Owns(
-			&v1alpha1.HostLease{},
+			&v1alpha1.BareMetalInstance{},
 			builder.WithPredicates(predicate.Funcs{
 				CreateFunc: func(e event.CreateEvent) bool {
 					return false
@@ -188,12 +188,12 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		bareMetalPool.Status.HostSets = []v1alpha1.BareMetalHostSet{}
 	}
 
-	currentHostLeases, err := r.listAndGroupHostLeases(ctx, bareMetalPool)
+	currentBareMetalInstances, err := r.listAndGroupBareMetalInstances(ctx, bareMetalPool)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileHostLeases(ctx, bareMetalPool, currentHostLeases, currentProfile); err != nil {
+	if err := r.reconcileBareMetalInstances(ctx, bareMetalPool, currentBareMetalInstances, currentProfile); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -208,7 +208,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		}
 	}
 
-	ready, err := r.checkHostLeasesReady(ctx, bareMetalPool)
+	ready, err := r.checkBareMetalInstancesReady(ctx, bareMetalPool)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -289,43 +289,43 @@ func (r *BareMetalPoolReconciler) ensureFinalizer(ctx context.Context, bareMetal
 	return nil
 }
 
-// listAndGroupHostLeases retrieves all HostLeases owned by this pool and groups them by hostType.
-func (r *BareMetalPoolReconciler) listAndGroupHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (map[string][]*v1alpha1.HostLease, error) {
+// listAndGroupBareMetalInstances retrieves all BareMetalInstances owned by this pool and groups them by hostType.
+func (r *BareMetalPoolReconciler) listAndGroupBareMetalInstances(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (map[string][]*v1alpha1.BareMetalInstance, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Retrieving HostLeases")
+	log.Info("Retrieving BareMetalInstances")
 
-	hostLeaseList := &v1alpha1.HostLeaseList{}
-	err := r.List(ctx, hostLeaseList,
+	bareMetalInstanceList := &v1alpha1.BareMetalInstanceList{}
+	err := r.List(ctx, bareMetalInstanceList,
 		client.InNamespace(bareMetalPool.Namespace),
 		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
 	)
 	if err != nil {
-		log.Error(err, "Failed to list HostLease CRs")
+		log.Error(err, "Failed to list BareMetalInstance CRs")
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 		bareMetalPool.SetStatusCondition(
 			v1alpha1.BareMetalPoolConditionTypeReady,
 			metav1.ConditionFalse,
-			"Failed to list HostLease CRs",
+			"Failed to list BareMetalInstance CRs",
 			v1alpha1.BareMetalPoolReasonFailed,
 		)
 		return nil, err
 	}
 
-	log.Info("Extracting HostLeases")
-	currentHostLeases := map[string][]*v1alpha1.HostLease{}
-	for i := range hostLeaseList.Items {
-		if !hostLeaseList.Items[i].DeletionTimestamp.IsZero() {
+	log.Info("Extracting BareMetalInstances")
+	currentBareMetalInstances := map[string][]*v1alpha1.BareMetalInstance{}
+	for i := range bareMetalInstanceList.Items {
+		if !bareMetalInstanceList.Items[i].DeletionTimestamp.IsZero() {
 			continue
 		}
-		hostType := hostLeaseList.Items[i].Spec.HostType
-		currentHostLeases[hostType] = append(currentHostLeases[hostType], &hostLeaseList.Items[i])
+		hostType := bareMetalInstanceList.Items[i].Spec.HostType
+		currentBareMetalInstances[hostType] = append(currentBareMetalInstances[hostType], &bareMetalInstanceList.Items[i])
 	}
 
-	return currentHostLeases, nil
+	return currentBareMetalInstances, nil
 }
 
-// reconcileHostLeases creates or deletes HostLeases to match the desired replica count per hostType.
-func (r *BareMetalPoolReconciler) reconcileHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, currentHostLeases map[string][]*v1alpha1.HostLease, currentProfile *profile.Profile) error {
+// reconcileBareMetalInstances creates or deletes BareMetalInstances to match the desired replica count per hostType.
+func (r *BareMetalPoolReconciler) reconcileBareMetalInstances(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, currentBareMetalInstances map[string][]*v1alpha1.BareMetalInstance, currentProfile *profile.Profile) error {
 	log := logf.FromContext(ctx)
 	log.Info("Determining desired replica count per host type")
 
@@ -333,22 +333,22 @@ func (r *BareMetalPoolReconciler) reconcileHostLeases(ctx context.Context, bareM
 	for _, hostSet := range bareMetalPool.Spec.HostSets {
 		desiredReplicas[hostSet.HostType] = hostSet.Replicas
 	}
-	for hostType := range currentHostLeases {
+	for hostType := range currentBareMetalInstances {
 		if _, ok := desiredReplicas[hostType]; !ok {
 			desiredReplicas[hostType] = 0
 		}
 	}
 
-	defer r.updateStatusHostSets(bareMetalPool, currentHostLeases)
+	defer r.updateStatusHostSets(bareMetalPool, currentBareMetalInstances)
 
 	for hostType, replicas := range desiredReplicas {
-		delta := replicas - int32(len(currentHostLeases[hostType]))
+		delta := replicas - int32(len(currentBareMetalInstances[hostType]))
 		if delta > 0 {
-			if err := r.scaleUpHostLeases(ctx, bareMetalPool, hostType, delta, currentHostLeases, currentProfile); err != nil {
+			if err := r.scaleUpBareMetalInstances(ctx, bareMetalPool, hostType, delta, currentBareMetalInstances, currentProfile); err != nil {
 				return err
 			}
 		} else if delta < 0 {
-			if err := r.scaleDownHostLeases(ctx, bareMetalPool, hostType, replicas, currentHostLeases); err != nil {
+			if err := r.scaleDownBareMetalInstances(ctx, bareMetalPool, hostType, replicas, currentBareMetalInstances); err != nil {
 				return err
 			}
 		}
@@ -357,53 +357,53 @@ func (r *BareMetalPoolReconciler) reconcileHostLeases(ctx context.Context, bareM
 	return nil
 }
 
-// scaleUpHostLeases creates the specified number of new HostLeases for the given hostType.
-func (r *BareMetalPoolReconciler) scaleUpHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, delta int32, currentHostLeases map[string][]*v1alpha1.HostLease, currentProfile *profile.Profile) error {
+// scaleUpBareMetalInstances creates the specified number of new BareMetalInstances for the given hostType.
+func (r *BareMetalPoolReconciler) scaleUpBareMetalInstances(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, delta int32, currentBareMetalInstances map[string][]*v1alpha1.BareMetalInstance, currentProfile *profile.Profile) error {
 	log := logf.FromContext(ctx)
 	log.Info(fmt.Sprintf("Scaling up: %s (+%d)", hostType, delta))
 
 	for range delta {
-		log.Info("Creating HostLease", "hostType", hostType)
-		if err := r.createHostLeaseCR(ctx, bareMetalPool, hostType, currentProfile); err != nil {
-			log.Error(err, "Failed to create HostLease CR")
+		log.Info("Creating BareMetalInstance", "hostType", hostType)
+		if err := r.createBareMetalInstanceCR(ctx, bareMetalPool, hostType, currentProfile); err != nil {
+			log.Error(err, "Failed to create BareMetalInstance CR")
 			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 			bareMetalPool.SetStatusCondition(
 				v1alpha1.BareMetalPoolConditionTypeReady,
 				metav1.ConditionFalse,
-				"Failed to create HostLease CR",
+				"Failed to create BareMetalInstance CR",
 				v1alpha1.BareMetalPoolReasonFailed,
 			)
 			return err
 		}
-		currentHostLeases[hostType] = append(currentHostLeases[hostType], nil)
+		currentBareMetalInstances[hostType] = append(currentBareMetalInstances[hostType], nil)
 	}
 
 	return nil
 }
 
-// scaleDownHostLeases deletes HostLeases to reach the desired replica count for the given hostType.
-func (r *BareMetalPoolReconciler) scaleDownHostLeases(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, replicas int32, currentHostLeases map[string][]*v1alpha1.HostLease) error {
+// scaleDownBareMetalInstances deletes BareMetalInstances to reach the desired replica count for the given hostType.
+func (r *BareMetalPoolReconciler) scaleDownBareMetalInstances(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, hostType string, replicas int32, currentBareMetalInstances map[string][]*v1alpha1.BareMetalInstance) error {
 	log := logf.FromContext(ctx)
-	log.Info(fmt.Sprintf("Scaling down: %s (-%d)", hostType, int32(len(currentHostLeases[hostType]))-replicas))
+	log.Info(fmt.Sprintf("Scaling down: %s (-%d)", hostType, int32(len(currentBareMetalInstances[hostType]))-replicas))
 
-	for int32(len(currentHostLeases[hostType])) > replicas {
-		log.Info("Deleting HostLease", "hostType", hostType)
-		lastIdx := len(currentHostLeases[hostType]) - 1
-		hostLeaseToDelete := currentHostLeases[hostType][lastIdx]
-		if err := r.Delete(ctx, hostLeaseToDelete); client.IgnoreNotFound(err) != nil {
-			log.Error(err, "Failed to delete HostLease CR", "hostLease", hostLeaseToDelete.Name)
+	for int32(len(currentBareMetalInstances[hostType])) > replicas {
+		log.Info("Deleting BareMetalInstance", "hostType", hostType)
+		lastIdx := len(currentBareMetalInstances[hostType]) - 1
+		bareMetalInstance := currentBareMetalInstances[hostType][lastIdx]
+		if err := r.Delete(ctx, bareMetalInstance); client.IgnoreNotFound(err) != nil {
+			log.Error(err, "Failed to delete BareMetalInstance CR", "bareMetalInstance", bareMetalInstance.Name)
 			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 			bareMetalPool.SetStatusCondition(
 				v1alpha1.BareMetalPoolConditionTypeReady,
 				metav1.ConditionFalse,
-				"Failed to delete HostLease CR",
+				"Failed to delete BareMetalInstance CR",
 				v1alpha1.BareMetalPoolReasonFailed,
 			)
 			return err
 		}
-		currentHostLeases[hostType] = currentHostLeases[hostType][:lastIdx]
-		if len(currentHostLeases[hostType]) == 0 {
-			delete(currentHostLeases, hostType)
+		currentBareMetalInstances[hostType] = currentBareMetalInstances[hostType][:lastIdx]
+		if len(currentBareMetalInstances[hostType]) == 0 {
+			delete(currentBareMetalInstances, hostType)
 			break
 		}
 	}
@@ -411,39 +411,39 @@ func (r *BareMetalPoolReconciler) scaleDownHostLeases(ctx context.Context, bareM
 	return nil
 }
 
-// checkHostLeasesReady returns true if all HostLeases have completed their provisioning templates.
-func (r *BareMetalPoolReconciler) checkHostLeasesReady(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (bool, error) {
+// checkBareMetalInstancesReady returns true if all BareMetalInstances have completed their provisioning templates.
+func (r *BareMetalPoolReconciler) checkBareMetalInstancesReady(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (bool, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Checking if HostLeases have finished their provisioning templates")
+	log.Info("Checking if BareMetalInstances have finished their provisioning templates")
 
-	hostLeaseList := &v1alpha1.HostLeaseList{}
-	err := r.List(ctx, hostLeaseList,
+	bareMetalInstanceList := &v1alpha1.BareMetalInstanceList{}
+	err := r.List(ctx, bareMetalInstanceList,
 		client.InNamespace(bareMetalPool.Namespace),
 		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
 	)
 	if err != nil {
-		log.Error(err, "Failed to list HostLease CRs")
+		log.Error(err, "Failed to list BareMetalInstance CRs")
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
 		bareMetalPool.SetStatusCondition(
 			v1alpha1.BareMetalPoolConditionTypeReady,
 			metav1.ConditionFalse,
-			"Failed to list HostLease CRs",
+			"Failed to list BareMetalInstance CRs",
 			v1alpha1.BareMetalPoolReasonFailed,
 		)
 		return false, err
 	}
 
-	for _, hostLease := range hostLeaseList.Items {
-		if !hostLease.DeletionTimestamp.IsZero() {
+	for _, bareMetalInstance := range bareMetalInstanceList.Items {
+		if !bareMetalInstance.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if hostLease.Status.Phase != v1alpha1.HostLeasePhaseReady {
-			log.Info("Not all HostLeases finished their provisioning templates")
+		if bareMetalInstance.Status.Phase != v1alpha1.BareMetalInstancePhaseReady {
+			log.Info("Not all BareMetalInstances finished their provisioning templates")
 			bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
 			bareMetalPool.SetStatusCondition(
 				v1alpha1.BareMetalPoolConditionTypeReady,
 				metav1.ConditionFalse,
-				"Not all HostLeases have finished their provisioning templates",
+				"Not all BareMetalInstances have finished their provisioning templates",
 				v1alpha1.BareMetalPoolReasonProgressing,
 			)
 			return false, nil
@@ -453,7 +453,7 @@ func (r *BareMetalPoolReconciler) checkHostLeasesReady(ctx context.Context, bare
 	return true, nil
 }
 
-// handleDeletion runs deprovisioning workflow and deletes all HostLeases before removing the finalizer.
+// handleDeletion runs deprovisioning workflow and deletes all BareMetalInstances before removing the finalizer.
 func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Deleting BareMetalPool")
@@ -470,31 +470,31 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 		bareMetalPool.Status.Jobs = []opv1alpha1.JobStatus{}
 	}
 
-	hostLeaseList := &v1alpha1.HostLeaseList{}
-	err := r.List(ctx, hostLeaseList,
+	bareMetalInstanceList := &v1alpha1.BareMetalInstanceList{}
+	err := r.List(ctx, bareMetalInstanceList,
 		client.InNamespace(bareMetalPool.Namespace),
 		client.MatchingLabels{BareMetalPoolLabelKey: string(bareMetalPool.UID)},
 	)
 	if err != nil {
-		log.Error(err, "Failed to list HostLease CRs during deletion")
+		log.Error(err, "Failed to list BareMetalInstance CRs during deletion")
 		return ctrl.Result{}, err
 	}
 
-	// Delete any HostLeases that don't have a deletion timestamp yet
-	for i := range hostLeaseList.Items {
-		hostLease := &hostLeaseList.Items[i]
-		if hostLease.DeletionTimestamp.IsZero() {
-			if err := r.Delete(ctx, hostLease); client.IgnoreNotFound(err) != nil {
-				log.Error(err, "Failed to delete HostLease CR", "hostLease", hostLease.Name)
+	// Delete any BareMetalInstances that don't have a deletion timestamp yet
+	for i := range bareMetalInstanceList.Items {
+		bareMetalInstance := &bareMetalInstanceList.Items[i]
+		if bareMetalInstance.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, bareMetalInstance); client.IgnoreNotFound(err) != nil {
+				log.Error(err, "Failed to delete BareMetalInstance CR", "bareMetalInstance", bareMetalInstance.Name)
 				return ctrl.Result{}, err
 			}
-			log.Info("Deleted HostLease CR", "hostLease", hostLease.Name)
+			log.Info("Deleted BareMetalInstance CR", "bareMetalInstance", bareMetalInstance.Name)
 		}
 	}
 
-	// Wait for all HostLeases to be fully deleted before removing finalizer
-	if len(hostLeaseList.Items) > 0 {
-		log.Info("Waiting for HostLeases to be deleted", "count", len(hostLeaseList.Items))
+	// Wait for all BareMetalInstances to be fully deleted before removing finalizer
+	if len(bareMetalInstanceList.Items) > 0 {
+		log.Info("Waiting for BareMetalInstances to be deleted", "count", len(bareMetalInstanceList.Items))
 		return ctrl.Result{RequeueAfter: r.HostDeletionPollIntervalDuration}, nil
 	}
 
@@ -629,8 +629,8 @@ func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bare
 	}
 }
 
-// createHostLeaseCR creates a new HostLease owned by the BareMetalPool with the given hostType and profile.
-func (r *BareMetalPoolReconciler) createHostLeaseCR(
+// createBareMetalInstanceCR creates a new BareMetalInstance owned by the BareMetalPool with the given hostType and profile.
+func (r *BareMetalPoolReconciler) createBareMetalInstanceCR(
 	ctx context.Context,
 	bareMetalPool *v1alpha1.BareMetalPool,
 	hostType string,
@@ -638,7 +638,7 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 ) error {
 	log := logf.FromContext(ctx)
 
-	hostLeaseName := fmt.Sprintf("%s-host-%s", bareMetalPool.Name, rand.String(5))
+	bareMetalInstanceName := fmt.Sprintf("%s-host-%s", bareMetalPool.Name, rand.String(5))
 	namespace := bareMetalPool.Namespace
 	labels := map[string]string{
 		BareMetalPoolLabelKey: string(bareMetalPool.UID),
@@ -674,13 +674,13 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 		}
 	}
 
-	hostLeaseCR := &v1alpha1.HostLease{
+	bareMetalInstanceCR := &v1alpha1.BareMetalInstance{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      hostLeaseName,
+			Name:      bareMetalInstanceName,
 			Namespace: namespace,
 			Labels:    labels,
 		},
-		Spec: v1alpha1.HostLeaseSpec{
+		Spec: v1alpha1.BareMetalInstanceSpec{
 			HostType:                  hostType,
 			ExternalHostID:            "",
 			ExternalHostName:          "",
@@ -691,16 +691,16 @@ func (r *BareMetalPoolReconciler) createHostLeaseCR(
 			TemplateParameters:        templateParameters,
 		},
 	}
-	if err := controllerutil.SetControllerReference(bareMetalPool, hostLeaseCR, r.Scheme); err != nil {
-		log.Error(err, "Failed to set controller reference", "hostLease", hostLeaseName)
+	if err := controllerutil.SetControllerReference(bareMetalPool, bareMetalInstanceCR, r.Scheme); err != nil {
+		log.Error(err, "Failed to set controller reference", "bareMetalInstance", bareMetalInstanceName)
 		return err
 	}
-	if err := r.Create(ctx, hostLeaseCR); client.IgnoreAlreadyExists(err) != nil {
-		log.Error(err, "Failed to create HostLease CR", "hostLease", hostLeaseName)
+	if err := r.Create(ctx, bareMetalInstanceCR); client.IgnoreAlreadyExists(err) != nil {
+		log.Error(err, "Failed to create BareMetalInstance CR", "bareMetalInstance", bareMetalInstanceName)
 		return err
 	}
 
-	log.Info("Created HostLease CR", "hostLease", hostLeaseName)
+	log.Info("Created BareMetalInstance CR", "bareMetalInstance", bareMetalInstanceName)
 	return nil
 }
 
@@ -758,14 +758,14 @@ func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMeta
 	)
 }
 
-// updateStatusHostSets syncs the BareMetalPool status.HostSets field with the current HostLeases.
-func (r *BareMetalPoolReconciler) updateStatusHostSets(bareMetalPool *v1alpha1.BareMetalPool, currentHostLeases map[string][]*v1alpha1.HostLease) {
+// updateStatusHostSets syncs the BareMetalPool status.HostSets field with the current BareMetalInstances.
+func (r *BareMetalPoolReconciler) updateStatusHostSets(bareMetalPool *v1alpha1.BareMetalPool, currentBareMetalInstances map[string][]*v1alpha1.BareMetalInstance) {
 	updatedHostSets := []v1alpha1.BareMetalHostSet{}
-	for hostType, hostLeases := range currentHostLeases {
-		if len(hostLeases) > 0 {
+	for hostType, bareMetalInstances := range currentBareMetalInstances {
+		if len(bareMetalInstances) > 0 {
 			updatedHostSets = append(updatedHostSets, v1alpha1.BareMetalHostSet{
 				HostType: hostType,
-				Replicas: int32(len(hostLeases)),
+				Replicas: int32(len(bareMetalInstances)),
 			})
 		}
 	}

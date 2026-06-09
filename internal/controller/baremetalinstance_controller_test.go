@@ -41,7 +41,7 @@ import (
 // mockInventoryClient implements inventory.Client for testing
 type mockInventoryClient struct {
 	findFreeHostFunc func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error)
-	assignHostFunc   func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error)
+	assignHostFunc   func(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*inventory.Host, error)
 	unassignHostFunc func(ctx context.Context, inventoryHostID string, labels []string) error
 }
 
@@ -52,9 +52,9 @@ func (m *mockInventoryClient) FindFreeHost(ctx context.Context, matchExpressions
 	return nil, nil
 }
 
-func (m *mockInventoryClient) AssignHost(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+func (m *mockInventoryClient) AssignHost(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*inventory.Host, error) {
 	if m.assignHostFunc != nil {
-		return m.assignHostFunc(ctx, inventoryHostID, hostLeaseID, labels)
+		return m.assignHostFunc(ctx, inventoryHostID, bareMetalInstanceID, labels)
 	}
 	return nil, nil
 }
@@ -146,15 +146,15 @@ func (m *mockProvisioningProvider) Name() string {
 	return "mock-provider"
 }
 
-var _ = Describe("HostLease Controller", func() {
+var _ = Describe("BareMetalInstance Controller", func() {
 	var (
-		ctx              context.Context
-		reconciler       *HostLeaseReconciler
-		mockK8sClient    *mockClient
-		mockInvClient    *mockInventoryClient
-		mockMgmtClient   *mockManagementClient
-		mockProvProvider *mockProvisioningProvider
-		hostLease        *v1alpha1.HostLease
+		ctx               context.Context
+		reconciler        *BareMetalInstanceReconciler
+		mockK8sClient     *mockClient
+		mockInvClient     *mockInventoryClient
+		mockMgmtClient    *mockManagementClient
+		mockProvProvider  *mockProvisioningProvider
+		bareMetalInstance *v1alpha1.BareMetalInstance
 
 		namespace string
 		hostType  string
@@ -172,7 +172,7 @@ var _ = Describe("HostLease Controller", func() {
 		hostType = "fc430"
 		hostClass = "external-mgmt"
 
-		reconciler = NewHostLeaseReconciler(
+		reconciler = NewBareMetalInstanceReconciler(
 			mockK8sClient,
 			k8sClient.Scheme(),
 			mockInvClient,
@@ -185,10 +185,10 @@ var _ = Describe("HostLease Controller", func() {
 		)
 	})
 
-	Describe("NewHostLeaseReconciler", func() {
+	Describe("NewBareMetalInstanceReconciler", func() {
 		Context("when interval duration parameters are zero or negative", func() {
 			BeforeEach(func() {
-				reconciler = NewHostLeaseReconciler(
+				reconciler = NewBareMetalInstanceReconciler(
 					mockK8sClient,
 					k8sClient.Scheme(),
 					mockInvClient,
@@ -211,7 +211,7 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when interval duration parameters are positive", func() {
 			It("should use the provided values", func() {
-				customReconciler := NewHostLeaseReconciler(
+				customReconciler := NewBareMetalInstanceReconciler(
 					mockK8sClient,
 					k8sClient.Scheme(),
 					mockInvClient,
@@ -233,16 +233,16 @@ var _ = Describe("HostLease Controller", func() {
 
 	Describe("reconcileInventory", func() {
 		BeforeEach(func() {
-			hostLease = &v1alpha1.HostLease{
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "reconcileInventory-hostLease",
+					Name:      "reconcileInventory-bareMetalInstance",
 					Namespace: namespace,
 					UID:       "test-uid-123",
 					Finalizers: []string{
-						HostLeaseInventoryFinalizer,
+						BareMetalInstanceInventoryFinalizer,
 					},
 				},
-				Spec: v1alpha1.HostLeaseSpec{
+				Spec: v1alpha1.BareMetalInstanceSpec{
 					HostType: hostType,
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
@@ -256,21 +256,21 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when the finalizer is missing", func() {
 			BeforeEach(func() {
-				Expect(controllerutil.RemoveFinalizer(hostLease, HostLeaseInventoryFinalizer)).To(BeTrue())
+				Expect(controllerutil.RemoveFinalizer(bareMetalInstance, BareMetalInstanceInventoryFinalizer)).To(BeTrue())
 			})
 
 			It("should add the finalizer and requeue", func() {
 				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-					hl := obj.(*v1alpha1.HostLease)
-					Expect(controllerutil.ContainsFinalizer(hl, HostLeaseInventoryFinalizer)).To(BeTrue())
+					hl := obj.(*v1alpha1.BareMetalInstance)
+					Expect(controllerutil.ContainsFinalizer(hl, BareMetalInstanceInventoryFinalizer)).To(BeTrue())
 					return nil
 				}
 
-				result, err := reconciler.reconcileInventory(ctx, hostLease)
+				result, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseAllocating))
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseAllocating))
 			})
 		})
 
@@ -282,11 +282,11 @@ var _ = Describe("HostLease Controller", func() {
 			})
 
 			It("should set phase to Failed and requeue after poll interval", func() {
-				result, err := reconciler.reconcileInventory(ctx, hostLease)
+				result, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(DefaultNoFreeHostsPollIntervalDuration))
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseFailed))
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseFailed))
 			})
 		})
 
@@ -307,12 +307,12 @@ var _ = Describe("HostLease Controller", func() {
 				updateCalled := false
 				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
 					updateCalled = true
-					hl := obj.(*v1alpha1.HostLease)
+					hl := obj.(*v1alpha1.BareMetalInstance)
 					Expect(hl.Spec.ExternalHostID).To(Equal("host-abc-123"))
 					return nil
 				}
 
-				result, err := reconciler.reconcileInventory(ctx, hostLease)
+				result, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
@@ -322,10 +322,10 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when assigning an ExternalHostID", func() {
 			BeforeEach(func() {
-				hostLease.Spec.ExternalHostID = "host-xyz-456"
-				mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+				bareMetalInstance.Spec.ExternalHostID = "host-xyz-456"
+				mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*inventory.Host, error) {
 					Expect(inventoryHostID).To(Equal("host-xyz-456"))
-					Expect(hostLeaseID).To(Equal("test-uid-123"))
+					Expect(bareMetalInstanceID).To(Equal("test-uid-123"))
 					return &inventory.Host{
 						InventoryHostID: inventoryHostID,
 						HostClass:       hostClass,
@@ -335,35 +335,35 @@ var _ = Describe("HostLease Controller", func() {
 
 			It("should assign the host and update HostClass", func() {
 				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-					hl := obj.(*v1alpha1.HostLease)
+					hl := obj.(*v1alpha1.BareMetalInstance)
 					Expect(hl.Spec.HostClass).To(Equal(hostClass))
 					return nil
 				}
 
-				result, err := reconciler.reconcileInventory(ctx, hostLease)
+				result, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseProgressing))
 			})
 		})
 
-		Context("when the host is already assigned to another HostLease", func() {
+		Context("when the host is already assigned to another BareMetalInstance", func() {
 			BeforeEach(func() {
-				hostLease.Spec.ExternalHostID = "host-taken-789"
-				mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*inventory.Host, error) {
+				bareMetalInstance.Spec.ExternalHostID = "host-taken-789"
+				mockInvClient.assignHostFunc = func(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*inventory.Host, error) {
 					return nil, nil
 				}
 			})
 
 			It("should unset ExternalHostID and requeue", func() {
 				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-					hl := obj.(*v1alpha1.HostLease)
+					hl := obj.(*v1alpha1.BareMetalInstance)
 					Expect(hl.Spec.ExternalHostID).To(Equal(""))
 					return nil
 				}
 
-				result, err := reconciler.reconcileInventory(ctx, hostLease)
+				result, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
@@ -374,17 +374,17 @@ var _ = Describe("HostLease Controller", func() {
 	Describe("reconcileManagement", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
-			hostLease = &v1alpha1.HostLease{
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "reconcileManagement-hostLease",
+					Name:      "reconcileManagement-bareMetalInstance",
 					Namespace: namespace,
 					UID:       "test-uid-123",
 					Finalizers: []string{
-						HostLeaseInventoryFinalizer,
-						HostLeaseManagementFinalizer,
+						BareMetalInstanceInventoryFinalizer,
+						BareMetalInstanceManagementFinalizer,
 					},
 				},
-				Spec: v1alpha1.HostLeaseSpec{
+				Spec: v1alpha1.BareMetalInstanceSpec{
 					HostType: hostType,
 					Selector: v1alpha1.HostSelectorSpec{
 						HostSelector: map[string]string{
@@ -398,27 +398,27 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when the finalizer is missing", func() {
 			BeforeEach(func() {
-				Expect(controllerutil.RemoveFinalizer(hostLease, HostLeaseManagementFinalizer)).To(BeTrue())
+				Expect(controllerutil.RemoveFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)).To(BeTrue())
 			})
 
 			It("should add the finalizer", func() {
 				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-					hl := obj.(*v1alpha1.HostLease)
-					Expect(controllerutil.ContainsFinalizer(hl, HostLeaseManagementFinalizer)).To(BeTrue())
+					hl := obj.(*v1alpha1.BareMetalInstance)
+					Expect(controllerutil.ContainsFinalizer(hl, BareMetalInstanceManagementFinalizer)).To(BeTrue())
 					return nil
 				}
 
-				result, err := reconciler.reconcileManagement(ctx, hostLease)
+				result, err := reconciler.reconcileManagement(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseProgressing))
 			})
 		})
 
 		Context("when PoweredOn is nil", func() {
 			BeforeEach(func() {
-				hostLease.Spec.PoweredOn = nil
+				bareMetalInstance.Spec.PoweredOn = nil
 			})
 
 			It("should skip reconcilePower", func() {
@@ -432,16 +432,16 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				result, err := reconciler.reconcileManagement(ctx, hostLease)
+				result, err := reconciler.reconcileManagement(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
 				Expect(setPowerStateCalled).To(BeFalse())
 
-				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
-				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseReady))
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
+				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseReady))
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOff))
@@ -450,7 +450,7 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when PoweredOn is set to be false", func() {
 			BeforeEach(func() {
-				hostLease.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
 			})
 
 			It("should update status", func() {
@@ -464,16 +464,16 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				result, err := reconciler.reconcileManagement(ctx, hostLease)
+				result, err := reconciler.reconcileManagement(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
 				Expect(setPowerStateCalled).To(BeFalse())
 
-				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
-				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseReady))
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
+				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseReady))
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOff))
@@ -482,7 +482,7 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when power is not yet converged", func() {
 			It("should requeue to be turned on", func() {
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 
 				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
 					return &management.PowerStatus{State: management.PowerOff}, nil
@@ -494,16 +494,16 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				result, err := reconciler.reconcileManagement(ctx, hostLease)
+				result, err := reconciler.reconcileManagement(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(DefaultManagementRecheckIntervalDuration))
 				Expect(setPowerStateCalled).To(BeTrue())
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseProgressing))
 			})
 
 			It("should requeue to be turned off", func() {
-				hostLease.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
 
 				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
 					return &management.PowerStatus{State: management.PowerOn}, nil
@@ -515,12 +515,12 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				result, err := reconciler.reconcileManagement(ctx, hostLease)
+				result, err := reconciler.reconcileManagement(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.RequeueAfter).To(Equal(DefaultManagementRecheckIntervalDuration))
 				Expect(setPowerStateCalled).To(BeTrue())
-				Expect(hostLease.Status.Phase).To(Equal(v1alpha1.HostLeasePhaseProgressing))
+				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseProgressing))
 			})
 		})
 	})
@@ -530,17 +530,17 @@ var _ = Describe("HostLease Controller", func() {
 			ctx = context.Background()
 			mockProvProvider = &mockProvisioningProvider{}
 			reconciler.ProvisioningProvider = mockProvProvider
-			hostLease = &v1alpha1.HostLease{
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "reconcileProvisioning-hostLease",
+					Name:      "reconcileProvisioning-bareMetalInstance",
 					Namespace: namespace,
 					UID:       "test-uid-123",
 					Finalizers: []string{
-						HostLeaseInventoryFinalizer,
-						HostLeaseManagementFinalizer,
+						BareMetalInstanceInventoryFinalizer,
+						BareMetalInstanceManagementFinalizer,
 					},
 				},
-				Spec: v1alpha1.HostLeaseSpec{
+				Spec: v1alpha1.BareMetalInstanceSpec{
 					HostType:       hostType,
 					ExternalHostID: "host-123",
 					HostClass:      hostClass,
@@ -551,7 +551,7 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when a successful provision job exists", func() {
 			BeforeEach(func() {
-				hostLease.Status.Jobs = []opv1alpha1.JobStatus{
+				bareMetalInstance.Status.Jobs = []opv1alpha1.JobStatus{
 					{
 						JobID:     "123",
 						Type:      opv1alpha1.JobTypeProvision,
@@ -569,7 +569,7 @@ var _ = Describe("HostLease Controller", func() {
 					return nil, nil
 				}
 
-				result, err := reconciler.reconcileProvisioning(ctx, hostLease)
+				result, err := reconciler.reconcileProvisioning(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
@@ -578,17 +578,17 @@ var _ = Describe("HostLease Controller", func() {
 		})
 	})
 
-	Describe("syncHostLeaseStatus", func() {
+	Describe("syncBareMetalInstanceStatus", func() {
 		var log logr.Logger
 
 		BeforeEach(func() {
 			log = logr.Discard()
-			hostLease = &v1alpha1.HostLease{
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "syncHostLeaseStatus-hostLease",
+					Name:      "syncBareMetalInstanceStatus-bareMetalInstance",
 					Namespace: namespace,
 				},
-				Spec: v1alpha1.HostLeaseSpec{
+				Spec: v1alpha1.BareMetalInstanceSpec{
 					ExternalHostID: "host-123",
 					HostClass:      hostClass,
 				},
@@ -597,9 +597,9 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when there is an error", func() {
 			It("should set PowerSynced to False", func() {
-				reconciler.syncHostLeaseStatus(hostLease, nil, errors.New("ironic connection failed"), log)
+				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, nil, errors.New("ironic connection failed"), log)
 
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonIronicAPIFailure))
@@ -610,12 +610,12 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when node is on", func() {
 			It("should set PowerSynced to True", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOn}
-				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
-				Expect(*hostLease.Status.PoweredOn).To(BeTrue())
+				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
+				Expect(*bareMetalInstance.Status.PoweredOn).To(BeTrue())
 
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOn))
@@ -625,12 +625,12 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when node is off", func() {
 			It("should set PowerSynced to True", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOff}
-				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
-				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
+				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
 
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerOff))
@@ -639,16 +639,16 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when power state does not match desired", func() {
 			BeforeEach(func() {
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 			})
 
 			It("should set PowerSynced to False", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOff}
-				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
-				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
+				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
@@ -658,11 +658,11 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when node is transitioning", func() {
 			It("should set PowerSynced to False", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOff, IsTransitioning: true}
-				reconciler.syncHostLeaseStatus(hostLease, powerStatus, nil, log)
+				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(hostLease.Status.PoweredOn).NotTo(BeNil())
-				Expect(*hostLease.Status.PoweredOn).To(BeFalse())
-				condition := hostLease.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
+				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
@@ -672,10 +672,10 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when powerStatus is nil and no error", func() {
 			It("should not modify status", func() {
-				reconciler.syncHostLeaseStatus(hostLease, nil, nil, log)
+				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, nil, nil, log)
 
-				Expect(hostLease.Status.PoweredOn).To(BeNil())
-				Expect(hostLease.Status.Conditions).To(BeEmpty())
+				Expect(bareMetalInstance.Status.PoweredOn).To(BeNil())
+				Expect(bareMetalInstance.Status.Conditions).To(BeEmpty())
 			})
 		})
 	})
@@ -686,12 +686,12 @@ var _ = Describe("HostLease Controller", func() {
 
 		BeforeEach(func() {
 			log = logr.Discard()
-			hostLease = &v1alpha1.HostLease{
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "reconcilePower-hostLease",
+					Name:      "reconcilePower-bareMetalInstance",
 					Namespace: namespace,
 				},
-				Spec: v1alpha1.HostLeaseSpec{
+				Spec: v1alpha1.BareMetalInstanceSpec{
 					ExternalHostID: "host-123",
 				},
 			}
@@ -700,7 +700,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when its currently off and should be on", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 			})
 
 			It("should power on", func() {
@@ -710,7 +710,7 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(calledTarget).To(Equal(management.PowerOn))
 			})
@@ -719,7 +719,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when its currently on and should be off", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOn}
-				hostLease.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
 			})
 
 			It("should power off", func() {
@@ -729,7 +729,7 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(calledTarget).To(Equal(management.PowerOff))
 			})
@@ -738,7 +738,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when power state already matches desired on", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOn}
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 			})
 
 			It("should not call SetPowerState", func() {
@@ -748,7 +748,7 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(called).To(BeFalse())
 			})
@@ -757,7 +757,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when power state already matches desired off", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				hostLease.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
 			})
 
 			It("should not call SetPowerState", func() {
@@ -767,7 +767,7 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(called).To(BeFalse())
 			})
@@ -776,7 +776,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when node is transitioning", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff, IsTransitioning: true}
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 			})
 
 			It("should skip SetPowerState", func() {
@@ -786,7 +786,7 @@ var _ = Describe("HostLease Controller", func() {
 					return nil
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(called).To(BeFalse())
 			})
@@ -795,7 +795,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when SetPowerState returns ErrTransitioning", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 			})
 
 			It("should not return error", func() {
@@ -803,7 +803,7 @@ var _ = Describe("HostLease Controller", func() {
 					return management.ErrTransitioning
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
@@ -811,7 +811,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when setting the power on fails", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				hostLease.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
 			})
 
 			It("should return error", func() {
@@ -819,7 +819,7 @@ var _ = Describe("HostLease Controller", func() {
 					return errors.New("ironic API error")
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("ironic API error"))
 			})
@@ -828,7 +828,7 @@ var _ = Describe("HostLease Controller", func() {
 		Context("when setting the power off fails", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOn}
-				hostLease.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
 			})
 
 			It("should return error", func() {
@@ -836,7 +836,7 @@ var _ = Describe("HostLease Controller", func() {
 					return errors.New("ironic API error")
 				}
 
-				err := reconciler.reconcilePower(ctx, hostLease, powerStatus, log)
+				err := reconciler.reconcilePower(ctx, bareMetalInstance, powerStatus, log)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("ironic API error"))
 			})
@@ -845,13 +845,13 @@ var _ = Describe("HostLease Controller", func() {
 
 	Describe("handleDeletion", func() {
 		BeforeEach(func() {
-			hostLease = &v1alpha1.HostLease{
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:              "handleDeletion-hostLease",
+					Name:              "handleDeletion-bareMetalInstance",
 					Namespace:         namespace,
 					DeletionTimestamp: &metav1.Time{Time: time.Now()},
 				},
-				Spec: v1alpha1.HostLeaseSpec{
+				Spec: v1alpha1.BareMetalInstanceSpec{
 					ExternalHostID: "host-to-delete",
 				},
 			}
@@ -859,7 +859,7 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when inventory finalizer is present", func() {
 			BeforeEach(func() {
-				controllerutil.AddFinalizer(hostLease, HostLeaseInventoryFinalizer)
+				controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceInventoryFinalizer)
 			})
 
 			It("should unassign the host and remove finalizer", func() {
@@ -871,12 +871,12 @@ var _ = Describe("HostLease Controller", func() {
 				}
 
 				mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-					hl := obj.(*v1alpha1.HostLease)
-					Expect(controllerutil.ContainsFinalizer(hl, HostLeaseInventoryFinalizer)).To(BeFalse())
+					hl := obj.(*v1alpha1.BareMetalInstance)
+					Expect(controllerutil.ContainsFinalizer(hl, BareMetalInstanceInventoryFinalizer)).To(BeFalse())
 					return nil
 				}
 
-				result, err := reconciler.handleDeletion(ctx, hostLease)
+				result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
@@ -885,7 +885,7 @@ var _ = Describe("HostLease Controller", func() {
 
 			Context("when ExternalHostID is empty", func() {
 				BeforeEach(func() {
-					hostLease.Spec.ExternalHostID = ""
+					bareMetalInstance.Spec.ExternalHostID = ""
 				})
 
 				It("should remove finalizer without unassigning", func() {
@@ -899,7 +899,7 @@ var _ = Describe("HostLease Controller", func() {
 						return nil
 					}
 
-					result, err := reconciler.handleDeletion(ctx, hostLease)
+					result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(result).To(Equal(ctrl.Result{}))
@@ -909,17 +909,17 @@ var _ = Describe("HostLease Controller", func() {
 
 			Context("when management finalizer is present", func() {
 				BeforeEach(func() {
-					controllerutil.AddFinalizer(hostLease, HostLeaseManagementFinalizer)
+					controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)
 				})
 
 				Context("when ProvisioningProvider is nil", func() {
 					BeforeEach(func() {
 						reconciler.ProvisioningProvider = nil
-						hostLease.Spec.TemplateID = "os-provision"
+						bareMetalInstance.Spec.TemplateID = "os-provision"
 					})
 
 					It("should return an error", func() {
-						result, err := reconciler.handleDeletion(ctx, hostLease)
+						result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 						Expect(err).To(HaveOccurred())
 						Expect(err.Error()).To(ContainSubstring("provisioning provider not configured"))
@@ -931,17 +931,17 @@ var _ = Describe("HostLease Controller", func() {
 					BeforeEach(func() {
 						mockProvProvider = &mockProvisioningProvider{}
 						reconciler.ProvisioningProvider = mockProvProvider
-						hostLease.Spec.TemplateID = ""
+						bareMetalInstance.Spec.TemplateID = ""
 					})
 
 					It("should skip deprovision and remove management finalizer", func() {
 						mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-							hl := obj.(*v1alpha1.HostLease)
-							Expect(controllerutil.ContainsFinalizer(hl, HostLeaseManagementFinalizer)).To(BeFalse())
+							hl := obj.(*v1alpha1.BareMetalInstance)
+							Expect(controllerutil.ContainsFinalizer(hl, BareMetalInstanceManagementFinalizer)).To(BeFalse())
 							return nil
 						}
 
-						result, err := reconciler.handleDeletion(ctx, hostLease)
+						result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 						Expect(err).NotTo(HaveOccurred())
 						Expect(result).To(Equal(ctrl.Result{}))
@@ -952,17 +952,17 @@ var _ = Describe("HostLease Controller", func() {
 					BeforeEach(func() {
 						mockProvProvider = &mockProvisioningProvider{}
 						reconciler.ProvisioningProvider = mockProvProvider
-						hostLease.Spec.TemplateID = shared.OsacNoopTemplate
+						bareMetalInstance.Spec.TemplateID = shared.OsacNoopTemplate
 					})
 
 					It("should skip deprovision and remove management finalizer", func() {
 						mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-							hl := obj.(*v1alpha1.HostLease)
-							Expect(controllerutil.ContainsFinalizer(hl, HostLeaseManagementFinalizer)).To(BeFalse())
+							hl := obj.(*v1alpha1.BareMetalInstance)
+							Expect(controllerutil.ContainsFinalizer(hl, BareMetalInstanceManagementFinalizer)).To(BeFalse())
 							return nil
 						}
 
-						result, err := reconciler.handleDeletion(ctx, hostLease)
+						result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 						Expect(err).NotTo(HaveOccurred())
 						Expect(result).To(Equal(ctrl.Result{}))
@@ -972,13 +972,13 @@ var _ = Describe("HostLease Controller", func() {
 				It("should trigger deprovision and requeue", func() {
 					mockProvProvider = &mockProvisioningProvider{}
 					reconciler.ProvisioningProvider = mockProvProvider
-					hostLease.Spec.TemplateID = "os-provision"
+					bareMetalInstance.Spec.TemplateID = "os-provision"
 
 					mockK8sClient.statusUpdateFunc = func(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 						return nil
 					}
 
-					result, err := reconciler.handleDeletion(ctx, hostLease)
+					result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(result.RequeueAfter).To(Equal(DefaultProvisionPollIntervalDuration))
@@ -988,7 +988,7 @@ var _ = Describe("HostLease Controller", func() {
 
 		Context("when inventory finalizer is not present", func() {
 			It("should return immediately", func() {
-				result, err := reconciler.handleDeletion(ctx, hostLease)
+				result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))

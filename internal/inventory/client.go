@@ -32,15 +32,15 @@ type Config struct {
 
 // Host is the common return type all clients must use
 type Host struct {
-	BareMetalPoolID string
-	HostLeaseID     string
-	InventoryHostID string
-	Name            string
-	HostType        string
-	HostClass       string
-	NetworkClass    string
-	ProvisionState  string
-	ManagedBy       string
+	BareMetalPoolID     string
+	BareMetalInstanceID string
+	InventoryHostID     string
+	Name                string
+	HostType            string
+	HostClass           string
+	NetworkClass        string
+	ProvisionState      string
+	ManagedBy           string
 }
 
 // Client interface for inventory implementations
@@ -49,11 +49,11 @@ type Client interface {
 	FindFreeHost(ctx context.Context, matchExpressions map[string]string) (*Host, error)
 
 	// AssignHost attempts to mark a host as assigned
-	// hostLeaseID must be non-empty; implementations should reject empty values.
+	// bareMetalInstanceID must be non-empty; implementations should reject empty values.
 	// Returns the assigned host if successful, or nil if the host is unavailable
 	// Returns an error only for backend failures
 	// This operation must be strongly consistent: it only returns when the inventory state reflects the assignment
-	AssignHost(ctx context.Context, inventoryHostID string, hostLeaseID string, labels map[string]string) (*Host, error)
+	AssignHost(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*Host, error)
 
 	// UnassignHost updates the host by undoing the assign operation
 	UnassignHost(ctx context.Context, inventoryHostID string, labels []string) error

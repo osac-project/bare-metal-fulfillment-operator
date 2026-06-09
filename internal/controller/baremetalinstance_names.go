@@ -41,9 +41,9 @@ const (
 )
 
 var (
-	// HostLeaseInventoryFinalizer is the finalizer added to HostLease resources for inventory cleanup
-	HostLeaseInventoryFinalizer string = fmt.Sprintf("%s/inventory", shared.OsacPrefix)
+	// BareMetalInstanceInventoryFinalizer is the finalizer added to BareMetalInstance resources for inventory cleanup
+	BareMetalInstanceInventoryFinalizer string = fmt.Sprintf("%s/inventory", shared.OsacPrefix)
 
-	// HostLeaseManagementFinalizer is the finalizer for management operations
-	HostLeaseManagementFinalizer string = fmt.Sprintf("%s/hostlease", shared.OsacPrefix)
+	// BareMetalInstanceManagementFinalizer is the finalizer for management operations
+	BareMetalInstanceManagementFinalizer string = fmt.Sprintf("%s/baremetalinstance", shared.OsacPrefix)
 )

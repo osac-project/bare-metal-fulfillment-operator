@@ -23,8 +23,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// HostLeaseSpec defines the desired state of HostLease.
-type HostLeaseSpec struct {
+// BareMetalInstanceSpec defines the desired state of BareMetalInstance.
+type BareMetalInstanceSpec struct {
 	// HostType is the resource class/type of the host.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
@@ -47,12 +47,12 @@ type HostLeaseSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
 	Selector HostSelectorSpec `json:"selector,omitempty"`
 	// InventoryLabels are labels to be applied to the host in the inventory system.
-	// These labels are non-persistent and will be removed when the HostLease is deleted.
+	// These labels are non-persistent and will be removed when the BareMetalInstance is deleted.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
 	InventoryLabels map[string]string `json:"inventorylabels,omitempty"`
 	// InventoryPersistentLabels are labels to be applied to the host in the inventory system.
-	// These labels are persistent and will remain on the host after the HostLease is deleted.
+	// These labels are persistent and will remain on the host after the BareMetalInstance is deleted.
 	// Persistent labels override InventoryLabels with the same key.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
@@ -73,51 +73,51 @@ type HostLeaseSpec struct {
 	PoweredOn *bool `json:"poweredOn,omitempty"`
 }
 
-// HostLeasePhaseType is a valid value for .status.phase
-type HostLeasePhaseType string
+// BareMetalInstancePhaseType is a valid value for .status.phase
+type BareMetalInstancePhaseType string
 
 const (
-	// HostLeasePhaseAllocating means searching for a free host to allocate
-	HostLeasePhaseAllocating HostLeasePhaseType = "Allocating"
+	// BareMetalInstancePhaseAllocating means searching for a free host to allocate
+	BareMetalInstancePhaseAllocating BareMetalInstancePhaseType = "Allocating"
 
-	// HostLeasePhaseProgressing means the host is being worked on (allocating, provisioning, power changes, etc.)
-	HostLeasePhaseProgressing HostLeasePhaseType = "Progressing"
+	// BareMetalInstancePhaseProgressing means the host is being worked on (allocating, provisioning, power changes, etc.)
+	BareMetalInstancePhaseProgressing BareMetalInstancePhaseType = "Progressing"
 
-	// HostLeasePhaseReady means the host is ready and stable
-	HostLeasePhaseReady HostLeasePhaseType = "Ready"
+	// BareMetalInstancePhaseReady means the host is ready and stable
+	BareMetalInstancePhaseReady BareMetalInstancePhaseType = "Ready"
 
-	// HostLeasePhaseFailed means reconciliation has failed
-	HostLeasePhaseFailed HostLeasePhaseType = "Failed"
+	// BareMetalInstancePhaseFailed means reconciliation has failed
+	BareMetalInstancePhaseFailed BareMetalInstancePhaseType = "Failed"
 
-	// HostLeasePhaseDeleting means the resource is being deleted
-	HostLeasePhaseDeleting HostLeasePhaseType = "Deleting"
+	// BareMetalInstancePhaseDeleting means the resource is being deleted
+	BareMetalInstancePhaseDeleting BareMetalInstancePhaseType = "Deleting"
 )
 
-// HostLeaseConditionType is a valid value for .status.conditions.type
-type HostLeaseConditionType string
+// BareMetalInstanceConditionType is a valid value for .status.conditions.type
+type BareMetalInstanceConditionType string
 
 const (
 	// HostConditionAllocated means the host has been allocated.
-	HostConditionAllocated HostLeaseConditionType = "Allocated"
+	HostConditionAllocated BareMetalInstanceConditionType = "Allocated"
 
 	// HostConditionAvailable means the host is available for provisioning.
-	HostConditionAvailable HostLeaseConditionType = "Available"
+	HostConditionAvailable BareMetalInstanceConditionType = "Available"
 
 	// HostConditionPowerSynced tracks the host power synchronization state.
 	// Set condition status to True and reason to PowerOn when power on is successful.
 	// Set condition status to True and reason to PowerOff when power off is successful.
 	// Set condition status to False and reason to IronicAPIFailure when the operation fails.
-	HostConditionPowerSynced HostLeaseConditionType = "PowerSynced"
+	HostConditionPowerSynced BareMetalInstanceConditionType = "PowerSynced"
 
 	// HostConditionProvisionTemplateComplete tracks provision template completion.
 	// Set condition status True on success.
 	// Set condition status False with reason Progressing or TemplateFailed while not complete.
-	HostConditionProvisionTemplateComplete HostLeaseConditionType = "ProvisionTemplateComplete"
+	HostConditionProvisionTemplateComplete BareMetalInstanceConditionType = "ProvisionTemplateComplete"
 
 	// HostConditionDeprovisionTemplateComplete tracks deprovision template completion.
 	// Set condition status True on success.
 	// Set condition status False with reason Progressing or TemplateFailed while not complete.
-	HostConditionDeprovisionTemplateComplete HostLeaseConditionType = "DeprovisionTemplateComplete"
+	HostConditionDeprovisionTemplateComplete BareMetalInstanceConditionType = "DeprovisionTemplateComplete"
 )
 
 // Host condition reason values
@@ -146,13 +146,13 @@ type HostSelectorSpec struct {
 	HostSelector map[string]string `json:"hostSelector,omitempty"`
 }
 
-// HostLeaseStatus defines the observed state of HostLease.
-type HostLeaseStatus struct {
-	// Phase provides a single-value overview of the state of the HostLease
+// BareMetalInstanceStatus defines the observed state of BareMetalInstance.
+type BareMetalInstanceStatus struct {
+	// Phase provides a single-value overview of the state of the BareMetalInstance
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Enum=Allocating;Progressing;Ready;Failed;Deleting
-	Phase HostLeasePhaseType `json:"phase,omitempty"`
+	Phase BareMetalInstancePhaseType `json:"phase,omitempty"`
 	// Jobs tracks the history of provision and deprovision operations
 	// Ordered chronologically, with latest operations at the end
 	// Limited to the last N jobs (configurable via OSAC_MAX_JOB_HISTORY, default 10)
@@ -164,12 +164,13 @@ type HostLeaseStatus struct {
 	// DesiredConfigVersion is a hash of the spec, used to detect spec changes and control retry behavior.
 	// +kubebuilder:validation:Optional
 	DesiredConfigVersion string `json:"desiredConfigVersion,omitempty"`
-	// PoweredOn is the current power state.
+	// PoweredOn is the observed power state.
+	// +kubebuilder:validation:Optional
 	PoweredOn *bool `json:"poweredOn,omitempty"`
 }
 
-// GetPoolID returns the owning BareMetalPool UID if the HostLease is owned by a BareMetalPool.
-func (h *HostLease) GetPoolID() (string, bool) {
+// GetPoolID returns the owning BareMetalPool UID if the BareMetalInstance is owned by a BareMetalPool.
+func (h *BareMetalInstance) GetPoolID() (string, bool) {
 	for _, ownerReference := range h.OwnerReferences {
 		if ownerReference.Controller == nil || !*ownerReference.Controller {
 			continue
@@ -183,7 +184,7 @@ func (h *HostLease) GetPoolID() (string, bool) {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=hl
+// +kubebuilder:resource:shortName=bmi
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="HostType",type=string,JSONPath=`.spec.hostType`
 // +kubebuilder:printcolumn:name="Template",type=string,JSONPath=`.spec.templateID`
@@ -191,24 +192,24 @@ func (h *HostLease) GetPoolID() (string, bool) {
 // +kubebuilder:printcolumn:name="NetworkClass",type=string,JSONPath=`.spec.networkClass`
 // +kubebuilder:printcolumn:name="ExternalHostID",type=string,JSONPath=`.spec.externalHostID`
 
-// HostLease is the Schema for the hostleases API.
-type HostLease struct {
+// BareMetalInstance is the Schema for the baremetalinstances API.
+type BareMetalInstance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   HostLeaseSpec   `json:"spec,omitempty"`
-	Status HostLeaseStatus `json:"status,omitempty"`
+	Spec   BareMetalInstanceSpec   `json:"spec,omitempty"`
+	Status BareMetalInstanceStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// HostLeaseList contains a list of HostLease.
-type HostLeaseList struct {
+// BareMetalInstanceList contains a list of BareMetalInstance.
+type BareMetalInstanceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []HostLease `json:"items"`
+	Items           []BareMetalInstance `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&HostLease{}, &HostLeaseList{})
+	SchemeBuilder.Register(&BareMetalInstance{}, &BareMetalInstanceList{})
 }

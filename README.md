@@ -82,8 +82,8 @@ released via deferred unlock calls.
 ### Profile
 
 The operator provides host selection via labels (hostSelector) and additional
-configuration to the BareMetalPool and each HostLease's host. Profiles are a
-collection of workflows to be run when BareMetalPool and HostLease are created
+configuration to the BareMetalPool and each BareMetalInstance's host. Profiles are a
+collection of workflows to be run when BareMetalPool and BareMetalInstance are created
 and deleted. The inventory hosts that get selected by the profile will be
 marked with profile labels in their backend.
 
@@ -112,9 +112,9 @@ The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment varia
 - `hostSelector` — map of key/value pairs that determine which hosts this profile applies to
 - `expectedTemplateParameters` — list of parameter names to validate input template parameters with
 - `bareMetalPoolTemplate` — workflow executed when a BareMetalPool is created and deleted
-- `hostTemplate` — workflow executed when a HostLease is created and deleted
-- `labels` — labels to be applied in the inventory that will get deleted when the host's HostLease gets deleted
-- `persistentLabels` — labels to be applied in the inventory that won't get deleted when the host's HostLease gets deleted
+- `hostTemplate` — workflow executed when a BareMetalInstance is created and deleted
+- `labels` — labels to be applied in the inventory that will get deleted when the host's BareMetalInstance gets deleted
+- `persistentLabels` — labels to be applied in the inventory that won't get deleted when the host's BareMetalInstance gets deleted
 
 ### Environment Variables
 
@@ -137,11 +137,11 @@ The following environment variables can be used to configure controller behavior
 
 - **`OSAC_HOST_DELETION_POLL_INTERVAL`** — Interval for polling host deletion status during BareMetalPool teardown. Default: `5s`
 
-#### HostLease Controller
+#### BareMetalInstance Controller
 
 - **`OSAC_NO_FREE_HOSTS_POLL_INTERVAL`** — Requeue interval when no free hosts are available in the inventory. Default: `30s`
 - **`OSAC_TRY_LOCK_FAIL_POLL_INTERVAL`** — Requeue interval when lock acquisition fails. Default: `1s`
-- **`OSAC_HOSTLEASE_MAX_CONCURRENT_RECONCILES`** — The maximum amount of times the HostLease reconcile function can run concurrently. Default: `1`
+- **`OSAC_BAREMETALINSTANCE_MAX_CONCURRENT_RECONCILES`** — The maximum amount of times the BareMetalInstance reconcile function can run concurrently. Default: `1`
 
 **Example:**
 ```yaml
