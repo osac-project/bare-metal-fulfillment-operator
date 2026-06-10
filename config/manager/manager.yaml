@@ -97,21 +97,6 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.namespace
-          - name: OSAC_AAP_URL
-            valueFrom:
-              secretKeyRef:
-                name: osac-config
-                key: OSAC_AAP_URL
-          - name: OSAC_AAP_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: osac-config
-                key: OSAC_AAP_TOKEN
-          - name: OSAC_AAP_INSECURE_SKIP_VERIFY
-            valueFrom:
-              secretKeyRef:
-                name: osac-config
-                key: OSAC_AAP_INSECURE_SKIP_VERIFY
         volumeMounts:
           - name: inventory-config
             mountPath: /etc/osac/inventory/
