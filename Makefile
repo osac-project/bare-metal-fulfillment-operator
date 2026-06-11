@@ -157,6 +157,35 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: helm-crds
+helm-crds: manifests ## Copy generated CRDs into the operator-crds Helm chart.
+	@echo "Syncing CRDs to charts/operator-crds/templates/..."
+	@python3 hack/sync-helm-crds.py
+	@python3 hack/sync-helm-operator.py
+
+.PHONY: check-helm-crds
+check-helm-crds: helm-crds ## Verify Helm CRD templates match config/crd/bases.
+	@if ! git diff --quiet -- charts/operator-crds/templates/; then \
+		echo "Helm CRD templates are out of sync with config/crd/bases. Run 'make helm-crds' and commit."; \
+		git diff -- charts/operator-crds/templates/; \
+		exit 1; \
+	fi
+	@if [ -n "$$(git ls-files --others --exclude-standard -- charts/operator-crds/templates/)" ]; then \
+		echo "Missing Helm CRD templates (run 'make helm-crds' and commit):"; \
+		git ls-files --others --exclude-standard -- charts/operator-crds/templates/; \
+		exit 1; \
+	fi
+	@if ! git diff --quiet -- charts/operator/templates/; then \
+		echo "Helm operator templates are out of sync with source manifests. Run 'make helm-crds' and commit."; \
+		git diff -- charts/operator/templates/; \
+		exit 1; \
+	fi
+	@if [ -n "$$(git ls-files --others --exclude-standard -- charts/operator/templates/)" ]; then \
+		echo "Missing Helm operator templates (run 'make helm-crds' and commit):"; \
+		git ls-files --others --exclude-standard -- charts/operator/templates/; \
+		exit 1; \
+	fi
+
 ##@ Build
 
 .PHONY: build

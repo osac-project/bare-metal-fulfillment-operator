@@ -1,0 +1,28 @@
+fullnameOverride: "bmf-operator"
+
+image:
+  repository: ghcr.io/osac-project/bare-metal-fulfillment-operator
+  tag: latest
+  pullPolicy: Always
+
+replicaCount: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+serviceAccount:
+  create: true
+  name: ""
+
+secrets:
+  inventoryConfig: "osac-inventory-config"
+  managementConfig: "osac-management-config"
+  osClouds: "osac-os-clouds"
+
+configMaps:
+  profiles: "osac-profiles"

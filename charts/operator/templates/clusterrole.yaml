@@ -1,0 +1,37 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "bare-metal-fulfillment-operator.fullname" . }}-manager-role
+  labels:
+    {{- include "bare-metal-fulfillment-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - osac.openshift.io
+  resources:
+  - baremetalinstances
+  - baremetalpools
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - osac.openshift.io
+  resources:
+  - baremetalinstances/finalizers
+  - baremetalpools/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - osac.openshift.io
+  resources:
+  - baremetalinstances/status
+  - baremetalpools/status
+  verbs:
+  - get
+  - patch
+  - update
