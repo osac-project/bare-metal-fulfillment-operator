@@ -25,7 +25,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -416,9 +415,9 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			})
 		})
 
-		Context("when PoweredOn is nil", func() {
+		Context("when RunStrategy is unspecified", func() {
 			BeforeEach(func() {
-				bareMetalInstance.Spec.PoweredOn = nil
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyUnspecified
 			})
 
 			It("should skip reconcilePower", func() {
@@ -438,8 +437,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				Expect(result).To(Equal(ctrl.Result{}))
 				Expect(setPowerStateCalled).To(BeFalse())
 
-				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
-				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyHalted))
 				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseReady))
 				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
@@ -448,9 +446,9 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			})
 		})
 
-		Context("when PoweredOn is set to be false", func() {
+		Context("when RunStrategy is Halted", func() {
 			BeforeEach(func() {
-				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyHalted
 			})
 
 			It("should update status", func() {
@@ -470,8 +468,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				Expect(result).To(Equal(ctrl.Result{}))
 				Expect(setPowerStateCalled).To(BeFalse())
 
-				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
-				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyHalted))
 				Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseReady))
 				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
@@ -482,7 +479,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 
 		Context("when power is not yet converged", func() {
 			It("should requeue to be turned on", func() {
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 
 				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
 					return &management.PowerStatus{State: management.PowerOff}, nil
@@ -503,7 +500,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			})
 
 			It("should requeue to be turned off", func() {
-				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyHalted
 
 				mockMgmtClient.getPowerStateFunc = func(ctx context.Context, hostID string) (*management.PowerStatus, error) {
 					return &management.PowerStatus{State: management.PowerOn}, nil
@@ -612,8 +609,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOn}
 				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
-				Expect(*bareMetalInstance.Status.PoweredOn).To(BeTrue())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyAlways))
 
 				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
@@ -627,8 +623,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOff}
 				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
-				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyHalted))
 
 				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
@@ -639,15 +634,14 @@ var _ = Describe("BareMetalInstance Controller", func() {
 
 		Context("when power state does not match desired", func() {
 			BeforeEach(func() {
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 			})
 
 			It("should set PowerSynced to False", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOff}
 				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
-				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyHalted))
 				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
@@ -660,8 +654,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				powerStatus := &management.PowerStatus{State: management.PowerOff, IsTransitioning: true}
 				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-				Expect(bareMetalInstance.Status.PoweredOn).NotTo(BeNil())
-				Expect(*bareMetalInstance.Status.PoweredOn).To(BeFalse())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyHalted))
 				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
 				Expect(condition).NotTo(BeNil())
 				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
@@ -674,7 +667,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			It("should not modify status", func() {
 				reconciler.syncBareMetalInstanceStatus(bareMetalInstance, nil, nil, log)
 
-				Expect(bareMetalInstance.Status.PoweredOn).To(BeNil())
+				Expect(bareMetalInstance.Status.RunStrategy).To(Equal(v1alpha1.RunStrategyUnspecified))
 				Expect(bareMetalInstance.Status.Conditions).To(BeEmpty())
 			})
 		})
@@ -700,7 +693,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when its currently off and should be on", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 			})
 
 			It("should power on", func() {
@@ -719,7 +712,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when its currently on and should be off", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOn}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyHalted
 			})
 
 			It("should power off", func() {
@@ -738,7 +731,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when power state already matches desired on", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOn}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 			})
 
 			It("should not call SetPowerState", func() {
@@ -757,7 +750,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when power state already matches desired off", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyHalted
 			})
 
 			It("should not call SetPowerState", func() {
@@ -776,7 +769,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when node is transitioning", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff, IsTransitioning: true}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 			})
 
 			It("should skip SetPowerState", func() {
@@ -795,7 +788,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when SetPowerState returns ErrTransitioning", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 			})
 
 			It("should not return error", func() {
@@ -811,7 +804,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when setting the power on fails", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOff}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(true)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyAlways
 			})
 
 			It("should return error", func() {
@@ -828,7 +821,7 @@ var _ = Describe("BareMetalInstance Controller", func() {
 		Context("when setting the power off fails", func() {
 			BeforeEach(func() {
 				powerStatus = &management.PowerStatus{State: management.PowerOn}
-				bareMetalInstance.Spec.PoweredOn = ptr.To(false)
+				bareMetalInstance.Spec.RunStrategy = v1alpha1.RunStrategyHalted
 			})
 
 			It("should return error", func() {

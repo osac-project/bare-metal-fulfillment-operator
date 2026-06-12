@@ -326,7 +326,7 @@ func (r *BareMetalInstanceReconciler) reconcileManagement(ctx context.Context, b
 	}
 	log.V(1).Info("Host power state", "nodeID", bareMetalInstance.Spec.ExternalHostID, "power_state", powerStatus.State)
 
-	if bareMetalInstance.Spec.PoweredOn != nil {
+	if bareMetalInstance.Spec.RunStrategy != v1alpha1.RunStrategyUnspecified {
 		if err := r.reconcilePower(ctx, bareMetalInstance, powerStatus, log); err != nil {
 			r.syncBareMetalInstanceStatus(bareMetalInstance, nil, err, log)
 			return ctrl.Result{}, err
@@ -348,8 +348,9 @@ func (r *BareMetalInstanceReconciler) reconcileManagement(ctx context.Context, b
 
 	r.syncBareMetalInstanceStatus(bareMetalInstance, powerStatus, nil, log)
 
-	if bareMetalInstance.Spec.PoweredOn != nil {
-		if powerStatus.IsTransitioning || *bareMetalInstance.Spec.PoweredOn != (powerStatus.State == management.PowerOn) {
+	if bareMetalInstance.Spec.RunStrategy != v1alpha1.RunStrategyUnspecified {
+		desiredOn := bareMetalInstance.Spec.RunStrategy == v1alpha1.RunStrategyAlways
+		if powerStatus.IsTransitioning || desiredOn != (powerStatus.State == management.PowerOn) {
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseProgressing
 			return ctrl.Result{RequeueAfter: r.ManagementRecheckIntervalDuration}, nil
 		}
@@ -362,7 +363,7 @@ func (r *BareMetalInstanceReconciler) reconcileManagement(ctx context.Context, b
 
 func (r *BareMetalInstanceReconciler) reconcilePower(ctx context.Context, bareMetalInstance *v1alpha1.BareMetalInstance, powerStatus *management.PowerStatus, log logr.Logger) error {
 	currentlyOn := powerStatus.State == management.PowerOn
-	desiredOn := *bareMetalInstance.Spec.PoweredOn
+	desiredOn := bareMetalInstance.Spec.RunStrategy == v1alpha1.RunStrategyAlways
 
 	if powerStatus.IsTransitioning {
 		log.V(1).Info("Node is transitioning, skipping power action",
@@ -372,7 +373,7 @@ func (r *BareMetalInstanceReconciler) reconcilePower(ctx context.Context, bareMe
 
 	needsPowerUpdate := desiredOn != currentlyOn
 	if !needsPowerUpdate {
-		log.Info("Power state already matches desired", "poweredOn", desiredOn, "power_state", powerStatus.State)
+		log.Info("Power state already matches desired", "runStrategy", bareMetalInstance.Spec.RunStrategy, "power_state", powerStatus.State)
 		return nil
 	}
 
@@ -493,7 +494,11 @@ func (r *BareMetalInstanceReconciler) syncBareMetalInstanceStatus(bareMetalInsta
 	}
 
 	poweredOn := powerStatus.State == management.PowerOn
-	bareMetalInstance.Status.PoweredOn = &poweredOn
+	if poweredOn {
+		bareMetalInstance.Status.RunStrategy = v1alpha1.RunStrategyAlways
+	} else {
+		bareMetalInstance.Status.RunStrategy = v1alpha1.RunStrategyHalted
+	}
 
 	if powerStatus.IsTransitioning {
 		bareMetalInstance.SetStatusCondition(
@@ -505,7 +510,7 @@ func (r *BareMetalInstanceReconciler) syncBareMetalInstanceStatus(bareMetalInsta
 		return
 	}
 
-	if bareMetalInstance.Spec.PoweredOn != nil && *bareMetalInstance.Spec.PoweredOn != poweredOn {
+	if bareMetalInstance.Spec.RunStrategy != v1alpha1.RunStrategyUnspecified && bareMetalInstance.Spec.RunStrategy != bareMetalInstance.Status.RunStrategy {
 		bareMetalInstance.SetStatusCondition(
 			v1alpha1.HostConditionPowerSynced,
 			metav1.ConditionFalse,
@@ -515,11 +520,11 @@ func (r *BareMetalInstanceReconciler) syncBareMetalInstanceStatus(bareMetalInsta
 	} else if poweredOn {
 		bareMetalInstance.SetStatusCondition(v1alpha1.HostConditionPowerSynced, metav1.ConditionTrue,
 			v1alpha1.HostConditionReasonPowerOn, "")
-		log.Info("BareMetalInstance power status synced", "poweredOn", poweredOn, "condition", v1alpha1.HostConditionPowerSynced, "conditionStatus", metav1.ConditionTrue, "reason", v1alpha1.HostConditionReasonPowerOn)
+		log.Info("BareMetalInstance power status synced", "runStrategy", bareMetalInstance.Status.RunStrategy, "condition", v1alpha1.HostConditionPowerSynced, "conditionStatus", metav1.ConditionTrue, "reason", v1alpha1.HostConditionReasonPowerOn)
 	} else {
 		bareMetalInstance.SetStatusCondition(v1alpha1.HostConditionPowerSynced, metav1.ConditionTrue,
 			v1alpha1.HostConditionReasonPowerOff, "")
-		log.Info("BareMetalInstance power status synced", "poweredOn", poweredOn, "condition", v1alpha1.HostConditionPowerSynced, "conditionStatus", metav1.ConditionTrue, "reason", v1alpha1.HostConditionReasonPowerOff)
+		log.Info("BareMetalInstance power status synced", "runStrategy", bareMetalInstance.Status.RunStrategy, "condition", v1alpha1.HostConditionPowerSynced, "conditionStatus", metav1.ConditionTrue, "reason", v1alpha1.HostConditionReasonPowerOff)
 	}
 }
 

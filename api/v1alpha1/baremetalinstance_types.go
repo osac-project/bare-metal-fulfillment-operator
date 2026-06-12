@@ -23,6 +23,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// BareMetalInstanceRunStrategy controls the desired power state of a BareMetalInstance.
+// +kubebuilder:validation:Enum=Always;Halted;""
+type BareMetalInstanceRunStrategy string
+
+const (
+	// RunStrategyUnspecified means power state is not managed.
+	RunStrategyUnspecified BareMetalInstanceRunStrategy = ""
+
+	// RunStrategyAlways keeps the instance powered on.
+	RunStrategyAlways BareMetalInstanceRunStrategy = "Always"
+
+	// RunStrategyHalted keeps the instance powered off.
+	RunStrategyHalted BareMetalInstanceRunStrategy = "Halted"
+)
+
 // BareMetalInstanceSpec defines the desired state of BareMetalInstance.
 type BareMetalInstanceSpec struct {
 	// HostType is the resource class/type of the host.
@@ -66,11 +81,11 @@ type BareMetalInstanceSpec struct {
 	// selected host template.
 	// +kubebuilder:validation:Optional
 	TemplateParameters string `json:"templateParameters,omitempty"`
-	// PoweredOn is the desired power state (true = powered on, false = powered off, nil = unmanaged).
-	// When nil, the operator will not attempt to change the host's power state (useful for adopting existing hosts).
-	// This represents the user's intent; the actual observed state is in status.poweredOn.
+	// RunStrategy controls the desired power state of the instance.
+	// "Always" keeps the instance powered on; "Halted" powers it off.
+	// When empty, the operator will not manage the host's power state.
 	// +kubebuilder:validation:Optional
-	PoweredOn *bool `json:"poweredOn,omitempty"`
+	RunStrategy BareMetalInstanceRunStrategy `json:"runStrategy,omitempty"`
 }
 
 // BareMetalInstancePhaseType is a valid value for .status.phase
@@ -164,9 +179,9 @@ type BareMetalInstanceStatus struct {
 	// DesiredConfigVersion is a hash of the spec, used to detect spec changes and control retry behavior.
 	// +kubebuilder:validation:Optional
 	DesiredConfigVersion string `json:"desiredConfigVersion,omitempty"`
-	// PoweredOn is the observed power state.
+	// RunStrategy is the observed power state of the instance.
 	// +kubebuilder:validation:Optional
-	PoweredOn *bool `json:"poweredOn,omitempty"`
+	RunStrategy BareMetalInstanceRunStrategy `json:"runStrategy,omitempty"`
 }
 
 // GetPoolID returns the owning BareMetalPool UID if the BareMetalInstance is owned by a BareMetalPool.
