@@ -580,6 +580,9 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 				labelsToRemove = append(labelsToRemove, key)
 			}
 		}
+		if _, ok := bareMetalInstance.GetPoolID(); ok {
+			labelsToRemove = append(labelsToRemove, shared.OsacBareMetalPoolIDLabel)
+		}
 
 		err := r.InventoryClient.UnassignHost(ctx, hostID, labelsToRemove)
 		if err != nil {
