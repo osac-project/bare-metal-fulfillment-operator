@@ -141,6 +141,7 @@ func TestParseHostID(t *testing.T) {
 
 // --- FindFreeHost ---
 
+//nolint:gocyclo
 func TestFindFreeHost(t *testing.T) {
 	ctx := context.Background()
 
