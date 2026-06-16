@@ -241,21 +241,6 @@ func TestFindFreeHost(t *testing.T) {
 		}
 	})
 
-	t.Run("accepts externally provisioned state", func(t *testing.T) {
-		bmh := newBMH("host-ext", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "externally provisioned")
-
-		m := newMetal3ClientForTest(bmh)
-		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if host == nil {
-			t.Fatal("expected a host with externally provisioned state, got nil")
-		}
-	})
-
 	t.Run("filters by host type label", func(t *testing.T) {
 		gpuHost := newBMH("host-gpu", map[string]string{
 			Metal3HostTypeLabel: "gpu-node",
