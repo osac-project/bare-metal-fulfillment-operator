@@ -5,6 +5,15 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - metal3.io
+  resources:
+  - baremetalhosts
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
   - osac.openshift.io
   resources:
   - baremetalinstances

@@ -7,6 +7,15 @@ metadata:
     {{- include "bare-metal-fulfillment-operator.labels" . | nindent 4 }}
 rules:
 - apiGroups:
+  - metal3.io
+  resources:
+  - baremetalhosts
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups:
   - osac.openshift.io
   resources:
   - baremetalinstances
