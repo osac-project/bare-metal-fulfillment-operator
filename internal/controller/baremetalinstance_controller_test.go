@@ -910,27 +910,12 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			Context("when management finalizer is present", func() {
 				BeforeEach(func() {
 					controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)
-				})
-
-				Context("when ProvisioningProvider is nil", func() {
-					BeforeEach(func() {
-						reconciler.ProvisioningProvider = nil
-						bareMetalInstance.Spec.TemplateID = "os-provision"
-					})
-
-					It("should return an error", func() {
-						result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
-
-						Expect(err).To(HaveOccurred())
-						Expect(err.Error()).To(ContainSubstring("provisioning provider not configured"))
-						Expect(result).To(Equal(ctrl.Result{}))
-					})
+					mockProvProvider = &mockProvisioningProvider{}
+					reconciler.ProvisioningProvider = mockProvProvider
 				})
 
 				Context("when TemplateID is empty", func() {
 					BeforeEach(func() {
-						mockProvProvider = &mockProvisioningProvider{}
-						reconciler.ProvisioningProvider = mockProvProvider
 						bareMetalInstance.Spec.TemplateID = ""
 					})
 
@@ -950,8 +935,6 @@ var _ = Describe("BareMetalInstance Controller", func() {
 
 				Context("when TemplateID is noop", func() {
 					BeforeEach(func() {
-						mockProvProvider = &mockProvisioningProvider{}
-						reconciler.ProvisioningProvider = mockProvProvider
 						bareMetalInstance.Spec.TemplateID = shared.OsacNoopTemplate
 					})
 
@@ -970,8 +953,6 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				})
 
 				It("should trigger deprovision and requeue", func() {
-					mockProvProvider = &mockProvisioningProvider{}
-					reconciler.ProvisioningProvider = mockProvProvider
 					bareMetalInstance.Spec.TemplateID = "os-provision"
 
 					mockK8sClient.statusUpdateFunc = func(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
@@ -982,6 +963,32 @@ var _ = Describe("BareMetalInstance Controller", func() {
 
 					Expect(err).NotTo(HaveOccurred())
 					Expect(result.RequeueAfter).To(Equal(DefaultProvisionPollIntervalDuration))
+				})
+
+				Context("when ProvisioningProvider is nil for a non-noop template", func() {
+					BeforeEach(func() {
+						reconciler.ProvisioningProvider = nil
+						bareMetalInstance.Spec.TemplateID = "os-provision"
+					})
+
+					It("should leave the management finalizer stuck", func() {
+						// this is so that every provision action is paired with a deprovision action
+						updateCalled := false
+						mockK8sClient.updateFunc = func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+							updateCalled = true
+							bmi := obj.(*v1alpha1.BareMetalInstance)
+							Expect(controllerutil.ContainsFinalizer(bmi, BareMetalInstanceManagementFinalizer)).To(BeFalse())
+							return nil
+						}
+
+						result, err := reconciler.handleDeletion(ctx, bareMetalInstance)
+
+						Expect(err).NotTo(HaveOccurred())
+						Expect(result).To(Equal(ctrl.Result{}))
+						Expect(bareMetalInstance.Status.Phase).To(Equal(v1alpha1.BareMetalInstancePhaseFailed))
+						Expect(updateCalled).To(BeFalse())
+						Expect(controllerutil.ContainsFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)).To(BeTrue())
+					})
 				})
 			})
 		})

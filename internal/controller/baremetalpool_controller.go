@@ -161,6 +161,18 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseProgressing
 	}
 
+	if bareMetalPool.Spec.Profile != nil && r.provider == nil {
+		log.Info("Provisioning provider not configured", "profile", bareMetalPool.Spec.Profile.Name)
+		bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+		bareMetalPool.SetStatusCondition(
+			v1alpha1.BareMetalPoolConditionTypeReady,
+			metav1.ConditionFalse,
+			"Provisioning provider not configured",
+			v1alpha1.BareMetalPoolReasonFailed,
+		)
+		return ctrl.Result{}, nil
+	}
+
 	desiredConfigVersion, err := provisioning.ComputeDesiredConfigVersion(bareMetalPool.Spec)
 	if err != nil {
 		log.Error(err, "Failed to compute desired config version")

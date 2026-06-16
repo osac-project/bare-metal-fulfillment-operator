@@ -94,17 +94,19 @@ func getCondition(conditions []metav1.Condition, conditionType string) *metav1.C
 
 var _ = Describe("BareMetalPool Controller", func() {
 	var (
-		reconciler    *BareMetalPoolReconciler
-		mockK8sClient *mockClient
-		testPool      *osacv1alpha1.BareMetalPool
-		testNamespace string
-		testPoolName  string
+		reconciler       *BareMetalPoolReconciler
+		mockK8sClient    *mockClient
+		mockProvProvider *mockProvisioningProvider
+		testPool         *osacv1alpha1.BareMetalPool
+		testNamespace    string
+		testPoolName     string
 	)
 
 	// Common setup for ALL tests
 	BeforeEach(func() {
 		testNamespace = "default"
 		mockK8sClient = &mockClient{Client: k8sClient}
+		mockProvProvider = &mockProvisioningProvider{}
 		hostReadyPollIntervalDuration := DefaultHostReadyPollIntervalDuration
 		hostDeletionPollIntervalDuration := DefaultHostDeletionPollIntervalDuration
 		provisionJobPollIntervalDuration := DefaultAAPStatusPollIntervalDuration
@@ -113,7 +115,7 @@ var _ = Describe("BareMetalPool Controller", func() {
 		reconciler = NewBareMetalPoolReconciler(
 			mockK8sClient,
 			k8sClient.Scheme(),
-			nil, // provider - not needed for basic tests
+			mockProvProvider,
 			hostReadyPollIntervalDuration,
 			hostDeletionPollIntervalDuration,
 			provisionJobPollIntervalDuration,
@@ -407,6 +409,72 @@ var _ = Describe("BareMetalPool Controller", func() {
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
 			Expect(condition.Message).To(Equal("Failed to create BareMetalInstance CR"))
+		})
+
+		Context("When provisioning provider is nil", func() {
+			BeforeEach(func() {
+				reconciler = NewBareMetalPoolReconciler(
+					mockK8sClient,
+					k8sClient.Scheme(),
+					nil,
+					DefaultHostReadyPollIntervalDuration,
+					DefaultHostDeletionPollIntervalDuration,
+					DefaultAAPStatusPollIntervalDuration,
+					DefaultMaxJobHistory,
+				)
+
+				testPoolName = "test-pool-nil-provider"
+				testPool = &osacv1alpha1.BareMetalPool{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       testPoolName,
+						Namespace:  testNamespace,
+						Finalizers: []string{BareMetalPoolFinalizer},
+					},
+					Spec: osacv1alpha1.BareMetalPoolSpec{
+						HostSets: []osacv1alpha1.BareMetalHostSet{
+							{
+								HostType: "fc430",
+								Replicas: 2,
+							},
+						},
+						Profile: &osacv1alpha1.ProfileSpec{
+							Name: "test",
+						},
+					},
+				}
+
+				Expect(k8sClient.Create(ctx, testPool)).To(Succeed())
+			})
+
+			It("should not allocate hosts", func() {
+				_, err := reconciler.Reconcile(ctx, ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      testPoolName,
+						Namespace: testNamespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				updatedPool := &osacv1alpha1.BareMetalPool{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name:      testPoolName,
+					Namespace: testNamespace,
+				}, updatedPool)).To(Succeed())
+
+				bareMetalInstanceList := &osacv1alpha1.BareMetalInstanceList{}
+				err = k8sClient.List(ctx, bareMetalInstanceList,
+					client.InNamespace(testNamespace),
+					client.MatchingLabels{BareMetalPoolLabelKey: string(updatedPool.UID)},
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bareMetalInstanceList.Items).To(BeEmpty())
+
+				condition := updatedPool.GetStatusCondition(osacv1alpha1.BareMetalPoolConditionTypeReady)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+				Expect(condition.Reason).To(Equal(osacv1alpha1.BareMetalPoolReasonFailed))
+				Expect(condition.Message).To(Equal("Provisioning provider not configured"))
+			})
 		})
 	})
 

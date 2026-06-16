@@ -146,6 +146,27 @@ func (r *BareMetalInstanceReconciler) handleUpdate(ctx context.Context, bareMeta
 	log := logf.FromContext(ctx)
 	log.Info("Updating BareMetalInstance")
 
+	if bareMetalInstance.Spec.TemplateID != "" && bareMetalInstance.Spec.TemplateID != shared.OsacNoopTemplate && r.ProvisioningProvider == nil {
+		log.Error(nil, "Provisioning provider not configured", "templateID", bareMetalInstance.Spec.TemplateID)
+		bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
+		if bareMetalInstance.IsStatusConditionTrue(v1alpha1.HostConditionAllocated) {
+			bareMetalInstance.SetStatusCondition(
+				v1alpha1.HostConditionProvisionTemplateComplete,
+				metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonTemplateFailed,
+				"Provisioning provider not configured",
+			)
+		} else {
+			bareMetalInstance.SetStatusCondition(
+				v1alpha1.HostConditionAllocated,
+				metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonTemplateFailed,
+				"Provisioning provider not configured",
+			)
+		}
+		return ctrl.Result{}, nil
+	}
+
 	if bareMetalInstance.Spec.HostClass == "" {
 		return r.reconcileInventory(ctx, bareMetalInstance)
 	}
@@ -276,8 +297,7 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 func (r *BareMetalInstanceReconciler) reconcileManagement(ctx context.Context, bareMetalInstance *v1alpha1.BareMetalInstance) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	if !controllerutil.ContainsFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer) {
-		controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer)
+	if controllerutil.AddFinalizer(bareMetalInstance, BareMetalInstanceManagementFinalizer) {
 		if err := r.Update(ctx, bareMetalInstance); err != nil {
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
 			return ctrl.Result{}, err
@@ -288,12 +308,6 @@ func (r *BareMetalInstanceReconciler) reconcileManagement(ctx context.Context, b
 
 	// Provisioning runs first — power reconciliation is suspended during provisioning
 	if bareMetalInstance.Spec.TemplateID != "" && bareMetalInstance.Spec.TemplateID != shared.OsacNoopTemplate {
-		if r.ProvisioningProvider == nil {
-			err := fmt.Errorf("provisioning provider not configured for template %q", bareMetalInstance.Spec.TemplateID)
-			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
-			return ctrl.Result{}, err
-		}
-
 		result, provErr := r.reconcileProvisioning(ctx, bareMetalInstance)
 		if provErr != nil {
 			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
@@ -536,8 +550,15 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 
 		if bareMetalInstance.Spec.TemplateID != "" && bareMetalInstance.Spec.TemplateID != shared.OsacNoopTemplate {
 			if r.ProvisioningProvider == nil {
-				err := fmt.Errorf("provisioning provider not configured for template %q", bareMetalInstance.Spec.TemplateID)
-				return ctrl.Result{}, err
+				log.Error(nil, "Provisioning provider not configured", "templateID", bareMetalInstance.Spec.TemplateID)
+				bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
+				bareMetalInstance.SetStatusCondition(
+					v1alpha1.HostConditionDeprovisionTemplateComplete,
+					metav1.ConditionFalse,
+					v1alpha1.HostConditionReasonTemplateFailed,
+					"Provisioning provider not configured",
+				)
+				return ctrl.Result{}, nil
 			}
 
 			result, done, err := r.reconcileDeprovisioning(ctx, bareMetalInstance)
