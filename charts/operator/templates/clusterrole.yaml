@@ -13,8 +13,8 @@ rules:
   verbs:
   - get
   - list
-  - watch
   - patch
+  - watch
 - apiGroups:
   - osac.openshift.io
   resources:
