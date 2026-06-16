@@ -50,9 +50,8 @@ const (
 )
 
 var acceptableProvisioningStates = map[metal3api.ProvisioningState]bool{
-	"ready":                  true,
-	"available":              true,
-	"externally provisioned": true,
+	"ready":     true,
+	"available": true,
 }
 
 func init() {
