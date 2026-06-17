@@ -205,11 +205,8 @@ var _ = Describe("Metal3 Management Backend", func() {
 			_, err := management.NewClient(context.Background(), &management.Config{
 				Type: "metal3",
 			})
-			// Will fail because ctrl.GetConfigOrDie() panics without kubeconfig,
-			// but we can't test this without a real cluster. Just verify the type
-			// is registered by checking it doesn't return "unsupported" error.
-			// Since we can't call it without a cluster, we test indirectly.
-			_ = err
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).NotTo(ContainSubstring(`unsupported management backend type: "metal3"`))
 		})
 	})
 })

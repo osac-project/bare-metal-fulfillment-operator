@@ -69,7 +69,10 @@ func NewMetal3ManagementClient(ctx context.Context, cfg *Config) (Client, error)
 		return nil, fmt.Errorf("failed to add metal3 types to scheme: %w", err)
 	}
 
-	restConfig := ctrl.GetConfigOrDie()
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load kubernetes config: %w", err)
+	}
 
 	k8sClient, err := client.New(restConfig, client.Options{Scheme: scheme})
 	if err != nil {
@@ -152,11 +155,14 @@ func (m *Metal3Client) SetPowerState(ctx context.Context, hostID string, target 
 		return nil
 	}
 
-	patch, _ := json.Marshal(map[string]interface{}{
+	patch, err := json.Marshal(map[string]interface{}{
 		"spec": map[string]interface{}{
 			"online": desiredOnline,
 		},
 	})
+	if err != nil {
+		return fmt.Errorf("failed to build power-state patch for node %s: %w", hostID, err)
+	}
 
 	if err := m.client.Patch(ctx, bmh, client.RawPatch(types.MergePatchType, patch)); err != nil {
 		return fmt.Errorf("failed to set power state on node %s: %w", hostID, err)
@@ -169,6 +175,10 @@ func (m *Metal3Client) getBMH(ctx context.Context, hostID string) (*metal3api.Ba
 	namespace, name, err := inventory.ParseHostID(hostID)
 	if err != nil {
 		return nil, err
+	}
+
+	if namespace != m.namespace {
+		return nil, fmt.Errorf("host %s is outside configured metal3 namespace %q", hostID, m.namespace)
 	}
 
 	bmh := &metal3api.BareMetalHost{}

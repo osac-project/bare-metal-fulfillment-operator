@@ -70,7 +70,10 @@ func NewMetal3Client(ctx context.Context, cfg *Config) (Client, error) {
 		return nil, fmt.Errorf("failed to add metal3 types to scheme: %w", err)
 	}
 
-	restConfig := ctrl.GetConfigOrDie()
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load kubernetes config: %w", err)
+	}
 
 	if err := validateBareMetalHostCRD(restConfig); err != nil {
 		return nil, err
@@ -130,7 +133,8 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 	log := ctrllog.FromContext(ctx)
 	log.Info("Finding free Metal3 host", "namespace", m.namespace)
 
-	listOpts := []client.ListOption{client.InNamespace(m.namespace)}
+	listOpts := make([]client.ListOption, 0, 2)
+	listOpts = append(listOpts, client.InNamespace(m.namespace))
 
 	matchLabels := map[string]string{}
 	if hostType, ok := matchExpressions["hostType"]; ok && hostType != "" {
