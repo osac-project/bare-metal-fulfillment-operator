@@ -243,12 +243,6 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				},
 				Spec: v1alpha1.BareMetalInstanceSpec{
 					HostType: hostType,
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      shared.OsacDefaultManagedByValue,
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
 				},
 			}
 		})
@@ -293,6 +287,8 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			BeforeEach(func() {
 				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
 					Expect(matchExpressions["hostType"]).To(Equal(hostType))
+					Expect(matchExpressions["managedBy"]).To(Equal(shared.OsacDefaultManagedByValue))
+					Expect(matchExpressions["provisionState"]).To(Equal(shared.OsacDefaultProvisionStateValue))
 					return &inventory.Host{
 						InventoryHostID: "host-abc-123",
 						HostClass:       hostClass,
@@ -316,6 +312,48 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
 				Expect(updateCalled).To(BeTrue())
+			})
+		})
+
+		Context("when selector overrides default managedBy and provisionState", func() {
+			BeforeEach(func() {
+				bareMetalInstance.Spec.Selector = v1alpha1.HostSelectorSpec{
+					HostSelector: map[string]string{
+						"managedBy":      "agent",
+						"provisionState": "active",
+					},
+				}
+				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
+					Expect(matchExpressions["managedBy"]).To(Equal("agent"))
+					Expect(matchExpressions["provisionState"]).To(Equal("active"))
+					return nil, nil
+				}
+			})
+
+			It("should forward the user-specified selector values to FindFreeHost", func() {
+				_, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Context("when selector contains empty string values for managedBy and provisionState", func() {
+			BeforeEach(func() {
+				bareMetalInstance.Spec.Selector = v1alpha1.HostSelectorSpec{
+					HostSelector: map[string]string{
+						"managedBy":      "",
+						"provisionState": "",
+					},
+				}
+				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
+					Expect(matchExpressions["managedBy"]).To(Equal(shared.OsacDefaultManagedByValue))
+					Expect(matchExpressions["provisionState"]).To(Equal(shared.OsacDefaultProvisionStateValue))
+					return nil, nil
+				}
+			})
+
+			It("should apply defaults when selector values are empty strings", func() {
+				_, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
+				Expect(err).NotTo(HaveOccurred())
 			})
 		})
 
@@ -385,12 +423,6 @@ var _ = Describe("BareMetalInstance Controller", func() {
 				},
 				Spec: v1alpha1.BareMetalInstanceSpec{
 					HostType: hostType,
-					Selector: v1alpha1.HostSelectorSpec{
-						HostSelector: map[string]string{
-							"managedBy":      shared.OsacDefaultManagedByValue,
-							"provisionState": shared.OsacDefaultProvisionStateValue,
-						},
-					},
 				},
 			}
 		})
