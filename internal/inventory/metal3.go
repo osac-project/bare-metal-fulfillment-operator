@@ -210,10 +210,22 @@ func (m *Metal3Client) AssignHost(ctx context.Context, inventoryHostID string, b
 		bmh.Labels[metal3LabelPrefix+key] = value
 	}
 
+	// Set consumerRef to mark this BMH as claimed. The BareMetalOperator uses
+	// consumerRef to prevent other consumers (HostClaim, Cluster API, etc.)
+	// from claiming a host that is already in use. BMO does not validate that
+	// the referenced object exists or resolve the reference — it only checks
+	// whether consumerRef is nil (unclaimed) or non-nil (claimed), and
+	// compares Name/Namespace/Kind/Group for claim matching.
+	//
+	// The Name is the BareMetalInstance UID rather than its resource name
+	// because the generic AssignHost interface identifies consumers by an
+	// opaque string ID, not by Kubernetes namespace/name. The Namespace is
+	// omitted because the consumer ID does not carry namespace information.
+	// This is sufficient for BMO's claim mechanism — it prevents double-
+	// booking without requiring a resolvable object reference.
 	bmh.Spec.ConsumerRef = &corev1.ObjectReference{
 		APIVersion: "osac.openshift.io/v1alpha1",
 		Kind:       "BareMetalInstance",
-		Namespace:  namespace,
 		Name:       bareMetalInstanceID,
 	}
 
