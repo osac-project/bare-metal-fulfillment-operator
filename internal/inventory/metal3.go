@@ -24,8 +24,8 @@ import (
 	"strings"
 
 	metal3api "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,16 +43,10 @@ var (
 const (
 	metal3LabelPrefix = shared.OsacPrefix + "/"
 
-	Metal3HostTypeLabel   = metal3LabelPrefix + "host-type"
-	Metal3ManagedByLabel  = metal3LabelPrefix + "managed-by"
-	Metal3InstanceIDLabel = metal3LabelPrefix + "instance-id"
-	Metal3PoolIDLabel     = metal3LabelPrefix + "pool-id"
+	Metal3HostTypeLabel  = metal3LabelPrefix + "host-type"
+	Metal3ManagedByLabel = metal3LabelPrefix + "managed-by"
+	Metal3PoolIDLabel    = metal3LabelPrefix + "pool-id"
 )
-
-var acceptableProvisioningStates = map[metal3api.ProvisioningState]bool{
-	"ready":     true,
-	"available": true,
-}
 
 func init() {
 	newClientFuncs["metal3"] = NewMetal3Client
@@ -136,15 +130,22 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 	log := ctrllog.FromContext(ctx)
 	log.Info("Finding free Metal3 host", "namespace", m.namespace)
 
-	bmhList := &metal3api.BareMetalHostList{}
-	if err := m.client.List(ctx, bmhList, client.InNamespace(m.namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list BareMetalHosts: %w", err)
-	}
+	listOpts := []client.ListOption{client.InNamespace(m.namespace)}
 
-	matchHostType := matchExpressions["hostType"]
+	matchLabels := map[string]string{}
+	if hostType, ok := matchExpressions["hostType"]; ok && hostType != "" {
+		matchLabels[Metal3HostTypeLabel] = hostType
+	}
 	matchManagedBy := matchExpressions["managedBy"]
 	if matchManagedBy == "" {
 		matchManagedBy = shared.OsacDefaultManagedByValue
+	}
+	matchLabels[Metal3ManagedByLabel] = matchManagedBy
+	listOpts = append(listOpts, client.MatchingLabels(matchLabels))
+
+	bmhList := &metal3api.BareMetalHostList{}
+	if err := m.client.List(ctx, bmhList, listOpts...); err != nil {
+		return nil, fmt.Errorf("failed to list BareMetalHosts: %w", err)
 	}
 
 	var candidates []metal3api.BareMetalHost
@@ -153,30 +154,11 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 			continue
 		}
 
-		if !acceptableProvisioningStates[bmh.Status.Provisioning.State] {
+		if bmh.Status.Provisioning.State != metal3api.StateAvailable {
 			continue
 		}
 
-		labels := bmh.Labels
-		if labels == nil {
-			labels = map[string]string{}
-		}
-
-		if _, assigned := labels[Metal3InstanceIDLabel]; assigned {
-			continue
-		}
-
-		if matchHostType != "" {
-			if labels[Metal3HostTypeLabel] != matchHostType {
-				continue
-			}
-		}
-
-		hostManagedBy := labels[Metal3ManagedByLabel]
-		if hostManagedBy == "" {
-			hostManagedBy = shared.OsacDefaultManagedByValue
-		}
-		if hostManagedBy != matchManagedBy {
+		if bmh.Spec.ConsumerRef != nil {
 			continue
 		}
 
@@ -213,26 +195,26 @@ func (m *Metal3Client) AssignHost(ctx context.Context, inventoryHostID string, b
 		return nil, fmt.Errorf("failed to get BareMetalHost %s: %w", inventoryHostID, err)
 	}
 
-	if bmh.Labels != nil {
-		if currentID, ok := bmh.Labels[Metal3InstanceIDLabel]; ok && currentID != "" && currentID != bareMetalInstanceID {
-			return nil, nil
-		}
+	if bmh.Spec.ConsumerRef != nil && bmh.Spec.ConsumerRef.Name != bareMetalInstanceID {
+		return nil, nil
 	}
 
-	patchLabels := map[string]string{
-		Metal3InstanceIDLabel: bareMetalInstanceID,
+	if bmh.Labels == nil {
+		bmh.Labels = map[string]string{}
 	}
 	for key, value := range labels {
-		patchLabels[metal3LabelPrefix+key] = value
+		bmh.Labels[metal3LabelPrefix+key] = value
 	}
 
-	patch := buildLabelPatch(patchLabels, nil)
-	if err := m.client.Patch(ctx, bmh, client.RawPatch(types.MergePatchType, patch)); err != nil {
+	bmh.Spec.ConsumerRef = &corev1.ObjectReference{
+		APIVersion: "osac.openshift.io/v1alpha1",
+		Kind:       "BareMetalInstance",
+		Namespace:  namespace,
+		Name:       bareMetalInstanceID,
+	}
+
+	if err := m.client.Update(ctx, bmh); err != nil {
 		return nil, fmt.Errorf("failed to assign BareMetalHost %s: %w", inventoryHostID, err)
-	}
-
-	if err := m.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, bmh); err != nil {
-		return nil, fmt.Errorf("failed to re-read BareMetalHost %s after patch: %w", inventoryHostID, err)
 	}
 
 	return bmhToHost(bmh, m.hostClass, m.networkClass), nil
@@ -249,13 +231,13 @@ func (m *Metal3Client) UnassignHost(ctx context.Context, inventoryHostID string,
 		return fmt.Errorf("failed to get BareMetalHost %s: %w", inventoryHostID, err)
 	}
 
-	labelsToRemove := []string{Metal3InstanceIDLabel}
 	for _, label := range labels {
-		labelsToRemove = append(labelsToRemove, metal3LabelPrefix+label)
+		delete(bmh.Labels, metal3LabelPrefix+label)
 	}
 
-	patch := buildLabelPatch(nil, labelsToRemove)
-	if err := m.client.Patch(ctx, bmh, client.RawPatch(types.MergePatchType, patch)); err != nil {
+	bmh.Spec.ConsumerRef = nil
+
+	if err := m.client.Update(ctx, bmh); err != nil {
 		return fmt.Errorf("failed to unassign BareMetalHost %s: %w", inventoryHostID, err)
 	}
 
@@ -281,9 +263,14 @@ func bmhToHost(bmh *metal3api.BareMetalHost, hostClass, networkClass string) *Ho
 		managedBy = shared.OsacDefaultManagedByValue
 	}
 
+	var bareMetalInstanceID string
+	if bmh.Spec.ConsumerRef != nil {
+		bareMetalInstanceID = bmh.Spec.ConsumerRef.Name
+	}
+
 	return &Host{
 		BareMetalPoolID:     labels[Metal3PoolIDLabel],
-		BareMetalInstanceID: labels[Metal3InstanceIDLabel],
+		BareMetalInstanceID: bareMetalInstanceID,
 		InventoryHostID:     fmt.Sprintf("%s/%s", bmh.Namespace, bmh.Name),
 		Name:                bmh.Name,
 		HostType:            labels[Metal3HostTypeLabel],
@@ -292,23 +279,4 @@ func bmhToHost(bmh *metal3api.BareMetalHost, hostClass, networkClass string) *Ho
 		ProvisionState:      string(bmh.Status.Provisioning.State),
 		ManagedBy:           managedBy,
 	}
-}
-
-func buildLabelPatch(setLabels map[string]string, removeLabels []string) []byte {
-	labelPatch := make(map[string]interface{})
-	for k, v := range setLabels {
-		labelPatch[k] = v
-	}
-	for _, k := range removeLabels {
-		labelPatch[k] = nil
-	}
-
-	patchMap := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"labels": labelPatch,
-		},
-	}
-
-	patchBytes, _ := json.Marshal(patchMap)
-	return patchBytes
 }

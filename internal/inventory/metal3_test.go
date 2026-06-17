@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	metal3api "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,6 +71,13 @@ func newBMH(name string, labels map[string]string, opStatus metal3api.Operationa
 				State: provState,
 			},
 		},
+	}
+}
+
+func defaultLabels() map[string]string {
+	return map[string]string{
+		Metal3HostTypeLabel:  "gpu-node",
+		Metal3ManagedByLabel: "baremetal",
 	}
 }
 
@@ -146,9 +154,7 @@ func TestFindFreeHost(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns matching unassigned host", func(t *testing.T) {
-		bmh := newBMH("host-1", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "available")
+		bmh := newBMH("host-1", defaultLabels(), metal3api.OperationalStatusOK, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
@@ -181,26 +187,22 @@ func TestFindFreeHost(t *testing.T) {
 		}
 	})
 
-	t.Run("excludes hosts with instance-id label", func(t *testing.T) {
-		assigned := newBMH("host-assigned", map[string]string{
-			Metal3HostTypeLabel:   "gpu-node",
-			Metal3InstanceIDLabel: "some-instance",
-		}, metal3api.OperationalStatusOK, "available")
+	t.Run("excludes hosts with consumerRef set", func(t *testing.T) {
+		bmh := newBMH("host-consumed", defaultLabels(), metal3api.OperationalStatusOK, metal3api.StateAvailable)
+		bmh.Spec.ConsumerRef = &corev1.ObjectReference{Name: "some-consumer"}
 
-		m := newMetal3ClientForTest(assigned)
+		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if host != nil {
-			t.Errorf("expected nil (host is assigned), got %+v", host)
+			t.Errorf("expected nil (host has consumerRef), got %+v", host)
 		}
 	})
 
 	t.Run("excludes hosts with non-ok operational status", func(t *testing.T) {
-		bmh := newBMH("host-error", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusError, "available")
+		bmh := newBMH("host-error", defaultLabels(), metal3api.OperationalStatusError, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
@@ -213,9 +215,7 @@ func TestFindFreeHost(t *testing.T) {
 	})
 
 	t.Run("excludes hosts with unacceptable provisioning state", func(t *testing.T) {
-		bmh := newBMH("host-provisioning", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "provisioning")
+		bmh := newBMH("host-provisioning", defaultLabels(), metal3api.OperationalStatusOK, metal3api.StateProvisioning)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
@@ -227,28 +227,11 @@ func TestFindFreeHost(t *testing.T) {
 		}
 	})
 
-	t.Run("accepts ready provisioning state", func(t *testing.T) {
-		bmh := newBMH("host-ready", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "ready")
-
-		m := newMetal3ClientForTest(bmh)
-		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if host == nil {
-			t.Fatal("expected a host with ready state, got nil")
-		}
-	})
-
 	t.Run("filters by host type label", func(t *testing.T) {
-		gpuHost := newBMH("host-gpu", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "available")
-		cpuHost := newBMH("host-cpu", map[string]string{
-			Metal3HostTypeLabel: "cpu-node",
-		}, metal3api.OperationalStatusOK, "available")
+		gpuLabels := map[string]string{Metal3HostTypeLabel: "gpu-node", Metal3ManagedByLabel: "baremetal"}
+		cpuLabels := map[string]string{Metal3HostTypeLabel: "cpu-node", Metal3ManagedByLabel: "baremetal"}
+		gpuHost := newBMH("host-gpu", gpuLabels, metal3api.OperationalStatusOK, metal3api.StateAvailable)
+		cpuHost := newBMH("host-cpu", cpuLabels, metal3api.OperationalStatusOK, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(gpuHost, cpuHost)
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
@@ -263,26 +246,9 @@ func TestFindFreeHost(t *testing.T) {
 		}
 	})
 
-	t.Run("filters by managed-by label with default", func(t *testing.T) {
-		bmh := newBMH("host-default-managed", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "available")
-
-		m := newMetal3ClientForTest(bmh)
-		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if host == nil {
-			t.Fatal("expected host (both default to baremetal), got nil")
-		}
-	})
-
 	t.Run("filters by managed-by label mismatch", func(t *testing.T) {
-		bmh := newBMH("host-agent", map[string]string{
-			Metal3HostTypeLabel:  "gpu-node",
-			Metal3ManagedByLabel: "agent",
-		}, metal3api.OperationalStatusOK, "available")
+		labels := map[string]string{Metal3HostTypeLabel: "gpu-node", Metal3ManagedByLabel: "agent"}
+		bmh := newBMH("host-agent", labels, metal3api.OperationalStatusOK, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})
@@ -295,10 +261,8 @@ func TestFindFreeHost(t *testing.T) {
 	})
 
 	t.Run("filters by explicit managed-by match expression", func(t *testing.T) {
-		bmh := newBMH("host-agent", map[string]string{
-			Metal3HostTypeLabel:  "gpu-node",
-			Metal3ManagedByLabel: "agent",
-		}, metal3api.OperationalStatusOK, "available")
+		labels := map[string]string{Metal3HostTypeLabel: "gpu-node", Metal3ManagedByLabel: "agent"}
+		bmh := newBMH("host-agent", labels, metal3api.OperationalStatusOK, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{
@@ -325,8 +289,8 @@ func TestFindFreeHost(t *testing.T) {
 	})
 
 	t.Run("matches hosts without hostType filter", func(t *testing.T) {
-		bmh := newBMH("host-any", map[string]string{},
-			metal3api.OperationalStatusOK, "available")
+		labels := map[string]string{Metal3ManagedByLabel: "baremetal"}
+		bmh := newBMH("host-any", labels, metal3api.OperationalStatusOK, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.FindFreeHost(ctx, map[string]string{})
@@ -344,10 +308,8 @@ func TestFindFreeHost(t *testing.T) {
 func TestAssignHost(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("assigns host with instance-id and additional labels", func(t *testing.T) {
-		bmh := newBMH("host-1", map[string]string{
-			Metal3HostTypeLabel: "gpu-node",
-		}, metal3api.OperationalStatusOK, "available")
+	t.Run("assigns host with labels and consumerRef", func(t *testing.T) {
+		bmh := newBMH("host-1", defaultLabels(), metal3api.OperationalStatusOK, metal3api.StateAvailable)
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.AssignHost(ctx, testNamespace+"/host-1", "instance-123", map[string]string{
@@ -363,24 +325,24 @@ func TestAssignHost(t *testing.T) {
 			t.Errorf("BareMetalInstanceID = %q, want %q", host.BareMetalInstanceID, "instance-123")
 		}
 
-		// Verify labels were set on the BMH
 		updatedBMH := &metal3api.BareMetalHost{}
 		if err := m.client.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "host-1"}, updatedBMH); err != nil {
 			t.Fatalf("failed to get updated BMH: %v", err)
 		}
-		if updatedBMH.Labels[Metal3InstanceIDLabel] != "instance-123" {
-			t.Errorf("instance-id label = %q, want %q", updatedBMH.Labels[Metal3InstanceIDLabel], "instance-123")
-		}
 		if updatedBMH.Labels[metal3LabelPrefix+"profileName"] != "myProfile" {
 			t.Errorf("profileName label = %q, want %q", updatedBMH.Labels[metal3LabelPrefix+"profileName"], "myProfile")
 		}
+		if updatedBMH.Spec.ConsumerRef == nil {
+			t.Fatal("consumerRef should be set")
+		}
+		if updatedBMH.Spec.ConsumerRef.Name != "instance-123" {
+			t.Errorf("consumerRef.Name = %q, want %q", updatedBMH.Spec.ConsumerRef.Name, "instance-123")
+		}
 	})
 
-	t.Run("returns nil if host is assigned to a different instance", func(t *testing.T) {
-		bmh := newBMH("host-taken", map[string]string{
-			Metal3HostTypeLabel:   "gpu-node",
-			Metal3InstanceIDLabel: "other-instance",
-		}, metal3api.OperationalStatusOK, "available")
+	t.Run("returns nil if host has consumerRef for a different consumer", func(t *testing.T) {
+		bmh := newBMH("host-taken", defaultLabels(), metal3api.OperationalStatusOK, metal3api.StateAvailable)
+		bmh.Spec.ConsumerRef = &corev1.ObjectReference{Name: "other-instance"}
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.AssignHost(ctx, testNamespace+"/host-taken", "my-instance", nil)
@@ -393,10 +355,8 @@ func TestAssignHost(t *testing.T) {
 	})
 
 	t.Run("succeeds if host is already assigned to the same instance", func(t *testing.T) {
-		bmh := newBMH("host-mine", map[string]string{
-			Metal3HostTypeLabel:   "gpu-node",
-			Metal3InstanceIDLabel: "my-instance",
-		}, metal3api.OperationalStatusOK, "available")
+		bmh := newBMH("host-mine", defaultLabels(), metal3api.OperationalStatusOK, metal3api.StateAvailable)
+		bmh.Spec.ConsumerRef = &corev1.ObjectReference{Name: "my-instance"}
 
 		m := newMetal3ClientForTest(bmh)
 		host, err := m.AssignHost(ctx, testNamespace+"/host-mine", "my-instance", nil)
@@ -438,13 +398,13 @@ func TestAssignHost(t *testing.T) {
 func TestUnassignHost(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("removes instance-id and specified labels", func(t *testing.T) {
+	t.Run("removes labels and clears consumerRef", func(t *testing.T) {
 		bmh := newBMH("host-1", map[string]string{
 			Metal3HostTypeLabel:               "gpu-node",
-			Metal3InstanceIDLabel:             "instance-123",
+			Metal3ManagedByLabel:              "baremetal",
 			metal3LabelPrefix + "profileName": "myProfile",
-			metal3LabelPrefix + "managedBy":   "agent",
-		}, metal3api.OperationalStatusOK, "available")
+		}, metal3api.OperationalStatusOK, metal3api.StateAvailable)
+		bmh.Spec.ConsumerRef = &corev1.ObjectReference{Name: "instance-123"}
 
 		m := newMetal3ClientForTest(bmh)
 		err := m.UnassignHost(ctx, testNamespace+"/host-1", []string{"profileName"})
@@ -456,22 +416,22 @@ func TestUnassignHost(t *testing.T) {
 		if err := m.client.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "host-1"}, updatedBMH); err != nil {
 			t.Fatalf("failed to get updated BMH: %v", err)
 		}
-		if _, ok := updatedBMH.Labels[Metal3InstanceIDLabel]; ok {
-			t.Error("instance-id label should have been removed")
-		}
 		if _, ok := updatedBMH.Labels[metal3LabelPrefix+"profileName"]; ok {
 			t.Error("profileName label should have been removed")
 		}
-		// managed-by should still be present (not in remove list)
-		if updatedBMH.Labels[metal3LabelPrefix+"managedBy"] != "agent" {
+		if updatedBMH.Labels[Metal3ManagedByLabel] != "baremetal" {
 			t.Error("managedBy label should not have been removed")
+		}
+		if updatedBMH.Spec.ConsumerRef != nil {
+			t.Error("consumerRef should have been cleared")
 		}
 	})
 
 	t.Run("handles no additional labels to remove", func(t *testing.T) {
 		bmh := newBMH("host-2", map[string]string{
-			Metal3InstanceIDLabel: "instance-456",
-		}, metal3api.OperationalStatusOK, "available")
+			Metal3ManagedByLabel: "baremetal",
+		}, metal3api.OperationalStatusOK, metal3api.StateAvailable)
+		bmh.Spec.ConsumerRef = &corev1.ObjectReference{Name: "instance-456"}
 
 		m := newMetal3ClientForTest(bmh)
 		err := m.UnassignHost(ctx, testNamespace+"/host-2", nil)
@@ -483,8 +443,8 @@ func TestUnassignHost(t *testing.T) {
 		if err := m.client.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "host-2"}, updatedBMH); err != nil {
 			t.Fatalf("failed to get updated BMH: %v", err)
 		}
-		if _, ok := updatedBMH.Labels[Metal3InstanceIDLabel]; ok {
-			t.Error("instance-id label should have been removed")
+		if updatedBMH.Spec.ConsumerRef != nil {
+			t.Error("consumerRef should have been cleared")
 		}
 	})
 
