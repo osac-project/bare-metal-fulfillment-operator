@@ -272,7 +272,6 @@ func main() {
 
 		var err error
 		provisioningProvider, err = provisioning.NewProvider(provisioning.ProviderConfig{
-			ProviderType:   provisioning.ProviderTypeAAP,
 			AAPClient:      aapClient,
 			TemplatePrefix: templatePrefix,
 		})

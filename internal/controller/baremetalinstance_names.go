@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/osac-project/osac-operator/pkg/provisioning"
+
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
@@ -37,7 +39,7 @@ const (
 	DefaultManagementRecheckIntervalDuration = 10 * time.Second
 
 	// DefaultProvisionPollIntervalDuration is the default interval to poll provisioning job status
-	DefaultProvisionPollIntervalDuration = 30 * time.Second
+	DefaultProvisionPollIntervalDuration = provisioning.DefaultStatusPollInterval
 )
 
 var (

@@ -210,7 +210,7 @@ func (r *BareMetalPoolReconciler) handleUpdate(ctx context.Context, bareMetalPoo
 	}
 
 	if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && currentProfile.BareMetalPoolTemplate != shared.OsacNoopTemplate && r.provider != nil {
-		result, err := r.TriggerProvision(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
+		result, err := r.reconcileProvisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
 		if err != nil {
 			log.Error(err, "Failed to run provisioning lifecycle")
 			return result, err
@@ -514,12 +514,24 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 	if bareMetalPool.Spec.Profile != nil {
 		profileName := bareMetalPool.Spec.Profile.Name
 		currentProfile := profile.Get(profileName)
-		if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && currentProfile.BareMetalPoolTemplate != shared.OsacNoopTemplate && r.provider != nil {
-			result, err := r.handleDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
+		if currentProfile != nil && currentProfile.BareMetalPoolTemplate != "" && currentProfile.BareMetalPoolTemplate != shared.OsacNoopTemplate {
+			if r.provider == nil {
+				log.Error(nil, "Provisioning provider not configured", "profile", profileName)
+				bareMetalPool.Status.Phase = v1alpha1.BareMetalPoolPhaseFailed
+				bareMetalPool.SetStatusCondition(
+					v1alpha1.BareMetalPoolConditionTypeReady,
+					metav1.ConditionFalse,
+					"Provisioning provider not configured",
+					v1alpha1.BareMetalPoolReasonFailed,
+				)
+				return ctrl.Result{}, nil
+			}
+
+			result, done, err := r.reconcileDeprovisioning(ctx, bareMetalPool, currentProfile.BareMetalPoolTemplate)
 			if err != nil {
 				return result, err
 			}
-			if !result.IsZero() {
+			if !done {
 				return result, nil
 			}
 		}
@@ -536,109 +548,22 @@ func (r *BareMetalPoolReconciler) handleDeletion(ctx context.Context, bareMetalP
 	return ctrl.Result{}, nil
 }
 
-// handleDeprovisioning triggers and monitors the deprovisioning job until it reaches a terminal state.
-func (r *BareMetalPoolReconciler) handleDeprovisioning(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
+// reconcileDeprovisioning triggers and monitors the deprovisioning job until it reaches a terminal state.
+func (r *BareMetalPoolReconciler) reconcileDeprovisioning(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, bool, error) {
 	if bareMetalPool.Annotations == nil {
 		bareMetalPool.Annotations = make(map[string]string)
 	}
 	bareMetalPool.Annotations[BareMetalPoolTemplateIDAnnotationKey] = bareMetalPoolTemplate
 
-	// Check if we already have a deprovision job
-	latestDeprovisionJob := provisioning.FindLatestJobByType(bareMetalPool.Status.Jobs, opv1alpha1.JobTypeDeprovision)
-
-	// Trigger deprovisioning - provider decides internally if ready
-	if latestDeprovisionJob == nil || latestDeprovisionJob.JobID == "" {
-		log.Info("Triggering deprovisioning", "provider", r.provider.Name())
-
-		result, err := r.provider.TriggerDeprovision(ctx, bareMetalPool)
-		if err != nil {
-			log.Error(err, "Failed to trigger deprovisioning")
-			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-		}
-
-		// Handle provider action
-		switch result.Action {
-		case provisioning.DeprovisionWaiting:
-			log.Info("Deprovisioning not ready, requeueing")
-			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-
-		case provisioning.DeprovisionSkipped:
-			log.Info("Provider skipped deprovisioning")
-			return ctrl.Result{}, nil
-
-		case provisioning.DeprovisionTriggered:
-			newJob := opv1alpha1.JobStatus{
-				JobID:                  result.JobID,
-				Type:                   opv1alpha1.JobTypeDeprovision,
-				Timestamp:              metav1.NewTime(time.Now().UTC()),
-				State:                  opv1alpha1.JobStatePending,
-				Message:                "Deprovisioning job triggered",
-				BlockDeletionOnFailure: result.BlockDeletionOnFailure,
-			}
-			bareMetalPool.Status.Jobs = provisioning.AppendJob(bareMetalPool.Status.Jobs, newJob, r.MaxJobHistory)
-			log.Info("Deprovisioning job triggered", "jobID", result.JobID)
-
-			// Persist the job status immediately to prevent duplicate jobs on crash/restart
-			if statusErr := r.Status().Update(ctx, bareMetalPool); statusErr != nil {
-				log.Error(statusErr, "Failed to persist job status after trigger")
-				return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, statusErr
-			}
-
-			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-
-		default:
-			log.Info("Unexpected deprovision action, requeueing", "action", result.Action)
-			return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-		}
+	result, done, err := provisioning.RunDeprovisioningLifecycle(
+		ctx, r.provider, bareMetalPool,
+		&bareMetalPool.Status.Jobs, r.MaxJobHistory, r.ProvisionJobPollIntervalDuration,
+	)
+	// DeprovisionSkipped is represented as !done + zero result + nil error; treat as done.
+	if !done && result.IsZero() && err == nil {
+		done = true
 	}
-
-	// We have a job ID, check its status
-	status, err := r.provider.GetDeprovisionStatus(ctx, bareMetalPool, latestDeprovisionJob.JobID)
-	if err != nil {
-		log.Error(err, "Failed to get deprovision job status", "jobID", latestDeprovisionJob.JobID)
-		updatedJob := *latestDeprovisionJob
-		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
-		provisioning.UpdateJob(bareMetalPool.Status.Jobs, updatedJob)
-		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-	}
-
-	// Update job status
-	updatedJob := *latestDeprovisionJob
-	updatedJob.State = status.State
-	updatedJob.Message = status.MessageWithDetails()
-	provisioning.UpdateJob(bareMetalPool.Status.Jobs, updatedJob)
-
-	// If job is still running, requeue
-	if !status.State.IsTerminal() {
-		log.Info("Deprovision job still running", "jobID", latestDeprovisionJob.JobID, "state", status.State)
-		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-	}
-
-	// Job reached terminal state (Succeeded, Failed, or Canceled)
-	if status.State.IsSuccessful() {
-		log.Info("Deprovision job succeeded", "jobID", latestDeprovisionJob.JobID)
-		return ctrl.Result{}, nil
-	}
-
-	// Job failed or was canceled
-	// Check policy stored in job status
-	if latestDeprovisionJob.BlockDeletionOnFailure {
-		// Block deletion to prevent orphaned resources
-		log.Info("Deprovision job failed, blocking deletion to prevent orphaned resources",
-			"jobID", latestDeprovisionJob.JobID,
-			"state", status.State,
-			"message", updatedJob.Message)
-		return ctrl.Result{RequeueAfter: r.ProvisionJobPollIntervalDuration}, nil
-	} else {
-		// Allow process to continue
-		log.Info("Deprovision job did not succeed, allowing process to continue",
-			"jobID", latestDeprovisionJob.JobID,
-			"state", status.State,
-			"message", updatedJob.Message)
-		return ctrl.Result{}, nil
-	}
+	return result, done, err
 }
 
 // createBareMetalInstanceCR creates a new BareMetalInstance owned by the BareMetalPool with the given hostType and profile.
@@ -716,9 +641,9 @@ func (r *BareMetalPoolReconciler) createBareMetalInstanceCR(
 	return nil
 }
 
-// TriggerProvision initiates the provisioning lifecycle for a BareMetalPool using the specified template.
+// reconcileProvisioning initiates the provisioning lifecycle for a BareMetalPool using the specified template.
 // It delegates to the provisioning provider and manages job status tracking with callbacks for success and failure.
-func (r *BareMetalPoolReconciler) TriggerProvision(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
+func (r *BareMetalPoolReconciler) reconcileProvisioning(ctx context.Context, bareMetalPool *v1alpha1.BareMetalPool, bareMetalPoolTemplate string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if bareMetalPool.Status.Jobs == nil {

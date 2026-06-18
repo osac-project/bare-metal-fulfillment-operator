@@ -636,61 +636,34 @@ func (r *BareMetalInstanceReconciler) handleDeletion(ctx context.Context, bareMe
 }
 
 func (r *BareMetalInstanceReconciler) reconcileDeprovisioning(ctx context.Context, bareMetalInstance *v1alpha1.BareMetalInstance) (ctrl.Result, bool, error) {
-	log := logf.FromContext(ctx)
-
 	if bareMetalInstance.Status.Jobs == nil {
 		bareMetalInstance.Status.Jobs = []opv1alpha1.JobStatus{}
 	}
 
-	latestDeprovisionJob := provisioning.FindLatestJobByType(bareMetalInstance.Status.Jobs, opv1alpha1.JobTypeDeprovision)
-
-	if !provisioning.HasJobID(latestDeprovisionJob) {
-		result, err := provisioning.TriggerDeprovisionJob(
-			ctx, r.ProvisioningProvider, bareMetalInstance,
-			&bareMetalInstance.Status.Jobs, provisioning.DefaultMaxJobHistory, r.ProvisionPollIntervalDuration,
-		)
-		if err != nil {
-			log.Error(err, "Failed to trigger deprovision job")
-			bareMetalInstance.SetStatusCondition(
-				v1alpha1.HostConditionDeprovisionTemplateComplete,
-				metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonTemplateFailed,
-				"Failed to trigger deprovision job",
-			)
-			return result, false, err
-		}
-		if err := r.Status().Update(ctx, bareMetalInstance); err != nil {
-			return ctrl.Result{}, false, fmt.Errorf("failed to flush status after deprovision trigger: %w", err)
-		}
-		if !result.IsZero() {
-			bareMetalInstance.SetStatusCondition(
-				v1alpha1.HostConditionDeprovisionTemplateComplete,
-				metav1.ConditionFalse,
-				v1alpha1.HostConditionReasonProgressing,
-				"Deprovision job in progress",
-			)
-			return result, false, nil
-		}
-		return ctrl.Result{}, true, nil
-	}
-
-	result, done, err := provisioning.PollDeprovisionJob(
+	result, done, err := provisioning.RunDeprovisioningLifecycle(
 		ctx, r.ProvisioningProvider, bareMetalInstance,
-		&bareMetalInstance.Status.Jobs, latestDeprovisionJob, r.ProvisionPollIntervalDuration,
+		&bareMetalInstance.Status.Jobs, provisioning.DefaultMaxJobHistory, r.ProvisionPollIntervalDuration,
 	)
+	// DeprovisionSkipped is represented as !done + zero result + nil error; treat as done.
+	if !done && result.IsZero() && err == nil {
+		done = true
+	}
 	if err != nil {
+		bareMetalInstance.SetStatusCondition(
+			v1alpha1.HostConditionDeprovisionTemplateComplete,
+			metav1.ConditionFalse,
+			v1alpha1.HostConditionReasonTemplateFailed,
+			"Deprovision job failed",
+		)
 		return result, false, err
 	}
-
 	if done {
-		if latestDeprovisionJob.State.IsSuccessful() {
-			bareMetalInstance.SetStatusCondition(
-				v1alpha1.HostConditionDeprovisionTemplateComplete,
-				metav1.ConditionTrue,
-				"Succeeded",
-				"Deprovision job completed successfully",
-			)
-		}
+		bareMetalInstance.SetStatusCondition(
+			v1alpha1.HostConditionDeprovisionTemplateComplete,
+			metav1.ConditionTrue,
+			"Succeeded",
+			"Deprovision job completed successfully",
+		)
 	} else {
 		bareMetalInstance.SetStatusCondition(
 			v1alpha1.HostConditionDeprovisionTemplateComplete,
@@ -699,6 +672,5 @@ func (r *BareMetalInstanceReconciler) reconcileDeprovisioning(ctx context.Contex
 			"Deprovision job in progress",
 		)
 	}
-
 	return result, done, nil
 }

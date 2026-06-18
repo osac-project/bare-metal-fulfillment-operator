@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/osac-project/osac-operator/pkg/provisioning"
+
 	"github.com/osac-project/bare-metal-fulfillment-operator/internal/shared"
 )
 
@@ -31,10 +33,10 @@ const (
 	DefaultHostDeletionPollIntervalDuration = 5 * time.Second
 
 	// DefaultProvisionJobPollInterval is the default interval for polling provision job status
-	DefaultAAPStatusPollIntervalDuration = 10 * time.Second
+	DefaultAAPStatusPollIntervalDuration = provisioning.DefaultStatusPollInterval
 
 	// DefaultMaxJobHistory is the default maximum number of job history entries to retain
-	DefaultMaxJobHistory = 10
+	DefaultMaxJobHistory = provisioning.DefaultMaxJobHistory
 )
 
 var (
