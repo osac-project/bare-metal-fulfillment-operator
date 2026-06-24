@@ -327,6 +327,34 @@ func TestFindFreeHost(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit empty managedBy selector matches unlabeled hosts", func(t *testing.T) {
+		bmh := newBMH("host-unlabeled", map[string]string{Metal3HostTypeLabel: "gpu-node"},
+			metal3api.OperationalStatusOK, metal3api.StateAvailable)
+
+		m := newMetal3ClientForTest(bmh)
+		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node", "managedBy": ""})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if host == nil {
+			t.Fatal("expected unlabeled host, got nil")
+		}
+	})
+
+	t.Run("explicit empty managedBy selector excludes labeled hosts", func(t *testing.T) {
+		bmh := newBMH("host-agent", map[string]string{Metal3HostTypeLabel: "gpu-node", Metal3ManagedByLabel: "agent"},
+			metal3api.OperationalStatusOK, metal3api.StateAvailable)
+
+		m := newMetal3ClientForTest(bmh)
+		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node", "managedBy": ""})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if host != nil {
+			t.Errorf("expected nil (host has managedBy label), got %+v", host)
+		}
+	})
+
 	t.Run("returns nil when no matching hosts exist", func(t *testing.T) {
 		m := newMetal3ClientForTest()
 		host, err := m.FindFreeHost(ctx, map[string]string{"hostType": "gpu-node"})

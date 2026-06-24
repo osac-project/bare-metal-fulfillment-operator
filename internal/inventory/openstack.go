@@ -210,7 +210,7 @@ func (c *OpenStackClient) findFreeHost(ctx context.Context, matchExpressions map
 
 			managedBy, hasLabel := getNestedLabel(node, ManagedByLabel)
 			matchManagedBy, hasSelector := matchExpressions["managedBy"]
-			if hasSelector {
+			if hasSelector && matchManagedBy != "" {
 				if managedBy != matchManagedBy {
 					continue
 				}

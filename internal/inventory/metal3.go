@@ -141,7 +141,7 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 		matchLabels[Metal3HostTypeLabel] = hostType
 	}
 	matchManagedBy, hasSelector := matchExpressions["managedBy"]
-	if hasSelector {
+	if hasSelector && matchManagedBy != "" {
 		matchLabels[Metal3ManagedByLabel] = matchManagedBy
 	}
 	if len(matchLabels) > 0 {
@@ -167,7 +167,7 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 			continue
 		}
 
-		if !hasSelector {
+		if !hasSelector || matchManagedBy == "" {
 			if managedBy := bmh.Labels[Metal3ManagedByLabel]; managedBy != "" {
 				continue
 			}

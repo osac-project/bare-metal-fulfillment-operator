@@ -117,7 +117,7 @@ The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment varia
 
 #### Host Selection and the `managedBy` Label
 
-When no `managedBy` key is present in `hostSelector`, the inventory client returns only hosts that **do not have** a `managedBy` label — i.e., unclaimed hosts. When a specific value is provided (e.g., `managedBy: agent`), only hosts with that exact label are returned.
+When no `managedBy` key is present in `hostSelector` (or when it is set to an empty string), the inventory client returns only hosts that **do not have** a `managedBy` label — i.e., unclaimed hosts. When a non-empty value is provided (e.g., `managedBy: agent`), only hosts with that exact label are returned.
 
 This enables a lifecycle pattern with `persistentLabels`: a profile that provisions agents can set `persistentLabels: {managedBy: agent}`. After provisioning, the host is excluded from the default (unclaimed) pool and is only matched by profiles that explicitly request `managedBy: agent`.
 
