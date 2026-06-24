@@ -140,12 +140,13 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 	if hostType, ok := matchExpressions["hostType"]; ok && hostType != "" {
 		matchLabels[Metal3HostTypeLabel] = hostType
 	}
-	matchManagedBy := matchExpressions["managedBy"]
-	if matchManagedBy == "" {
-		matchManagedBy = shared.OsacDefaultManagedByValue
+	matchManagedBy, hasSelector := matchExpressions["managedBy"]
+	if hasSelector {
+		matchLabels[Metal3ManagedByLabel] = matchManagedBy
 	}
-	matchLabels[Metal3ManagedByLabel] = matchManagedBy
-	listOpts = append(listOpts, client.MatchingLabels(matchLabels))
+	if len(matchLabels) > 0 {
+		listOpts = append(listOpts, client.MatchingLabels(matchLabels))
+	}
 
 	bmhList := &metal3api.BareMetalHostList{}
 	if err := m.client.List(ctx, bmhList, listOpts...); err != nil {
@@ -164,6 +165,12 @@ func (m *Metal3Client) FindFreeHost(ctx context.Context, matchExpressions map[st
 
 		if bmh.Spec.ConsumerRef != nil {
 			continue
+		}
+
+		if !hasSelector {
+			if managedBy := bmh.Labels[Metal3ManagedByLabel]; managedBy != "" {
+				continue
+			}
 		}
 
 		candidates = append(candidates, bmh)
@@ -274,11 +281,6 @@ func bmhToHost(bmh *metal3api.BareMetalHost, hostClass, networkClass string) *Ho
 		labels = map[string]string{}
 	}
 
-	managedBy := labels[Metal3ManagedByLabel]
-	if managedBy == "" {
-		managedBy = shared.OsacDefaultManagedByValue
-	}
-
 	var bareMetalInstanceID string
 	if bmh.Spec.ConsumerRef != nil {
 		bareMetalInstanceID = bmh.Spec.ConsumerRef.Name
@@ -293,6 +295,6 @@ func bmhToHost(bmh *metal3api.BareMetalHost, hostClass, networkClass string) *Ho
 		HostClass:           hostClass,
 		NetworkClass:        networkClass,
 		ProvisionState:      string(bmh.Status.Provisioning.State),
-		ManagedBy:           managedBy,
+		ManagedBy:           labels[Metal3ManagedByLabel],
 	}
 }

@@ -208,16 +208,13 @@ func (c *OpenStackClient) findFreeHost(ctx context.Context, matchExpressions map
 			}
 			bareMetalPoolID, _ := getNestedLabel(node, shared.OsacBareMetalPoolIDLabel)
 
-			// Get managedBy label, defaulting to standard value if not set
-			managedBy, ok := getNestedLabel(node, ManagedByLabel)
-			if !ok || managedBy == "" {
-				managedBy = shared.OsacDefaultManagedByValue
-			}
-			matchManagedBy, ok := matchExpressions["managedBy"]
-			if !ok || matchManagedBy == "" {
-				matchManagedBy = shared.OsacDefaultManagedByValue
-			}
-			if managedBy != matchManagedBy {
+			managedBy, hasLabel := getNestedLabel(node, ManagedByLabel)
+			matchManagedBy, hasSelector := matchExpressions["managedBy"]
+			if hasSelector {
+				if managedBy != matchManagedBy {
+					continue
+				}
+			} else if hasLabel && managedBy != "" {
 				continue
 			}
 
@@ -316,15 +313,9 @@ func (c *OpenStackClient) assignHost(ctx context.Context, inventoryHostID string
 		return nil, err
 	}
 
-	managedBy, ok := getNestedLabel(node, ManagedByLabel)
-	if !ok {
-		managedBy = shared.OsacDefaultManagedByValue
-	}
+	managedBy, _ := getNestedLabel(node, ManagedByLabel)
 
-	bareMetalPoolID, ok := getNestedLabel(node, shared.OsacBareMetalPoolIDLabel)
-	if !ok {
-		bareMetalPoolID = ""
-	}
+	bareMetalPoolID, _ := getNestedLabel(node, shared.OsacBareMetalPoolIDLabel)
 
 	return &Host{
 		BareMetalPoolID:     bareMetalPoolID,
@@ -368,7 +359,6 @@ func (c *OpenStackClient) unassignHost(ctx context.Context, inventoryHostID stri
 	}
 
 	// Build list of labels to remove: hostId and user-provided labels
-	// Note: managedBy is kept as a persistent label
 	labelsToRemove := make([]string, 0, 1+len(labels))
 	seen := map[string]struct{}{BareMetalInstanceIDLabel: {}}
 	labelsToRemove = append(labelsToRemove, BareMetalInstanceIDLabel)

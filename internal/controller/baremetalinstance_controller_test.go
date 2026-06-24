@@ -287,12 +287,11 @@ var _ = Describe("BareMetalInstance Controller", func() {
 			BeforeEach(func() {
 				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
 					Expect(matchExpressions["hostType"]).To(Equal(hostType))
-					Expect(matchExpressions["managedBy"]).To(Equal(shared.OsacDefaultManagedByValue))
+					Expect(matchExpressions).NotTo(HaveKey("managedBy"))
 					Expect(matchExpressions["provisionState"]).To(Equal(shared.OsacDefaultProvisionStateValue))
 					return &inventory.Host{
 						InventoryHostID: "host-abc-123",
 						HostClass:       hostClass,
-						ManagedBy:       shared.OsacDefaultManagedByValue,
 						ProvisionState:  shared.OsacDefaultProvisionStateValue,
 					}, nil
 				}
@@ -345,13 +344,13 @@ var _ = Describe("BareMetalInstance Controller", func() {
 					},
 				}
 				mockInvClient.findFreeHostFunc = func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
-					Expect(matchExpressions["managedBy"]).To(Equal(shared.OsacDefaultManagedByValue))
+					Expect(matchExpressions["managedBy"]).To(Equal(""))
 					Expect(matchExpressions["provisionState"]).To(Equal(shared.OsacDefaultProvisionStateValue))
 					return nil, nil
 				}
 			})
 
-			It("should apply defaults when selector values are empty strings", func() {
+			It("should pass through empty managedBy and default provisionState", func() {
 				_, err := reconciler.reconcileInventory(ctx, bareMetalInstance)
 				Expect(err).NotTo(HaveOccurred())
 			})

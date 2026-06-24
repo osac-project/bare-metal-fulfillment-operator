@@ -25,6 +25,5 @@ const (
 
 	OsacBareMetalPoolIDLabel = "bareMetalPoolId"
 
-	OsacDefaultManagedByValue      = "baremetal"
 	OsacDefaultProvisionStateValue = "available"
 )

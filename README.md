@@ -96,7 +96,6 @@ The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment varia
 ```yaml
 - name: agentProvisioning
   hostSelector:
-    managedBy: baremetal
     provisionState: available
   bareMetalPoolTemplate: private_network
   hostTemplate: agent_provision
@@ -115,6 +114,14 @@ The path can be overridden with the `OSAC_PROFILE_CONFIG_PATH` environment varia
 - `hostTemplate` — workflow executed when a BareMetalInstance is created and deleted
 - `labels` — labels to be applied in the inventory that will get deleted when the host's BareMetalInstance gets deleted
 - `persistentLabels` — labels to be applied in the inventory that won't get deleted when the host's BareMetalInstance gets deleted
+
+#### Host Selection and the `managedBy` Label
+
+When no `managedBy` key is present in `hostSelector`, the inventory client returns only hosts that **do not have** a `managedBy` label — i.e., unclaimed hosts. When a specific value is provided (e.g., `managedBy: agent`), only hosts with that exact label are returned.
+
+This enables a lifecycle pattern with `persistentLabels`: a profile that provisions agents can set `persistentLabels: {managedBy: agent}`. After provisioning, the host is excluded from the default (unclaimed) pool and is only matched by profiles that explicitly request `managedBy: agent`.
+
+The `managedBy` label is never set automatically by the operator — it is only written when specified in a profile's `labels` or `persistentLabels`.
 
 ### Environment Variables
 

@@ -202,9 +202,6 @@ func (r *BareMetalInstanceReconciler) reconcileInventory(ctx context.Context, ba
 			matchExpressions = map[string]string{}
 		}
 		matchExpressions["hostType"] = bareMetalInstance.Spec.HostType
-		if v, ok := matchExpressions["managedBy"]; !ok || v == "" {
-			matchExpressions["managedBy"] = shared.OsacDefaultManagedByValue
-		}
 		if v, ok := matchExpressions["provisionState"]; !ok || v == "" {
 			matchExpressions["provisionState"] = shared.OsacDefaultProvisionStateValue
 		}
