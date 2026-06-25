@@ -30,6 +30,8 @@ type Config struct {
 type Client interface {
 	GetPowerState(ctx context.Context, hostID string) (*PowerStatus, error)
 	SetPowerState(ctx context.Context, hostID string, target PowerState) error
+	TriggerRestart(ctx context.Context, hostID string) error
+	IsRestartComplete(ctx context.Context, hostID string) (bool, error)
 }
 
 type NewClientFunc func(ctx context.Context, cfg *Config) (Client, error)
