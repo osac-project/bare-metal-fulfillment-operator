@@ -26,3 +26,11 @@ secrets:
 
 configMaps:
   profiles: "osac-profiles"
+
+env:
+  # AAP configuration - these are required and environment-specific
+  aapUrl: "https://example.com"  # required
+  aapTokenSecretName: "osac-aap-api-token"  # required
+  aapTokenSecretKey: "token"  # required
+  # Only include values that are commonly changed at deploy time
+  # All other values have reasonable defaults in the Go code

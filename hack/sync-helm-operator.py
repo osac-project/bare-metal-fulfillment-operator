@@ -58,6 +58,21 @@ CONFIGMAP_TO_VALUES: dict[str, str] = {
     "osac-profiles": "{{ .Values.configMaps.profiles }}",
 }
 
+# Environment variables for values that are required and environment-specific.
+# Only include variables that are expected to be changed at deploy time.
+# All other configuration uses reasonable defaults in the Go code.
+_ENV_BLOCK = """\
+          # Only configure values that are required and environment-specific
+          - name: OSAC_AAP_URL
+            value: {{ required "env.aapUrl is required" .Values.env.aapUrl | quote }}
+          - name: OSAC_AAP_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ required "env.aapTokenSecretName is required" .Values.env.aapTokenSecretName | quote }}
+                key: {{ required "env.aapTokenSecretKey is required" .Values.env.aapTokenSecretKey | quote }}
+                optional: false
+"""
+
 # Matches a kustomize-generated labels block at exactly 2-space metadata indent.
 # Anchored to line-start (MULTILINE) so it doesn't accidentally match pod-template
 # labels at deeper indentation levels.
@@ -273,6 +288,16 @@ def sync_deployment(src: Path, dst: Path) -> None:
         r"serviceAccountName:\s*\S+",
         f"serviceAccountName: {SA_NAME}",
         content,
+    )
+
+    # Inject configurable env vars before volumeMounts.
+    anchor = "        volumeMounts:"
+    if anchor not in content:
+        raise RuntimeError(f"volumeMounts anchor string not found in deployment template. Expected: {anchor!r}")
+    content = content.replace(
+        anchor,
+        _ENV_BLOCK + anchor,
+        1,  # Limit to one replacement
     )
 
     # Add seccompProfile to pod securityContext if not already present.

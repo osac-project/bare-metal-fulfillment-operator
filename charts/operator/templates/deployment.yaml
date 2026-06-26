@@ -83,6 +83,15 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.namespace
+          # Only configure values that are required and environment-specific
+          - name: OSAC_AAP_URL
+            value: {{ required "env.aapUrl is required" .Values.env.aapUrl | quote }}
+          - name: OSAC_AAP_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ required "env.aapTokenSecretName is required" .Values.env.aapTokenSecretName | quote }}
+                key: {{ required "env.aapTokenSecretKey is required" .Values.env.aapTokenSecretKey | quote }}
+                optional: false
         volumeMounts:
           - name: inventory-config
             mountPath: /etc/osac/inventory/
