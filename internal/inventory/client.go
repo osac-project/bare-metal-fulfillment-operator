@@ -57,6 +57,9 @@ type Client interface {
 
 	// UnassignHost updates the host by undoing the assign operation
 	UnassignHost(ctx context.Context, inventoryHostID string, labels []string) error
+
+	// GetHostTypes returns a list of unique host types (resource classes) in the inventory
+	GetHostTypes(ctx context.Context) ([]string, error)
 }
 
 // NewClientFunc is a function that creates a new inventory client from config
