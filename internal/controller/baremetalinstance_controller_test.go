@@ -42,6 +42,7 @@ type mockInventoryClient struct {
 	findFreeHostFunc func(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error)
 	assignHostFunc   func(ctx context.Context, inventoryHostID string, bareMetalInstanceID string, labels map[string]string) (*inventory.Host, error)
 	unassignHostFunc func(ctx context.Context, inventoryHostID string, labels []string) error
+	getHostTypesFunc func(ctx context.Context) ([]string, error)
 }
 
 func (m *mockInventoryClient) FindFreeHost(ctx context.Context, matchExpressions map[string]string) (*inventory.Host, error) {
@@ -63,6 +64,13 @@ func (m *mockInventoryClient) UnassignHost(ctx context.Context, inventoryHostID 
 		return m.unassignHostFunc(ctx, inventoryHostID, labels)
 	}
 	return nil
+}
+
+func (m *mockInventoryClient) GetHostTypes(ctx context.Context) ([]string, error) {
+	if m.getHostTypesFunc != nil {
+		return m.getHostTypesFunc(ctx)
+	}
+	return nil, nil
 }
 
 // mockManagementClient implements management.Client for testing
