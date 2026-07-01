@@ -18,6 +18,7 @@ package management_test
 
 import (
 	"context"
+	"errors"
 
 	metal3api "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
@@ -63,6 +64,12 @@ func newBMHForManagement(name string, online bool, poweredOn bool) *metal3api.Ba
 			PoweredOn: poweredOn,
 		},
 	}
+}
+
+func newBMHWithAnnotations(name string, online bool, poweredOn bool, annotations map[string]string) *metal3api.BareMetalHost {
+	bmh := newBMHForManagement(name, online, poweredOn)
+	bmh.Annotations = annotations
+	return bmh
 }
 
 var _ = Describe("Metal3 Management Backend", func() {
@@ -165,7 +172,7 @@ var _ = Describe("Metal3 Management Backend", func() {
 
 			err := m.SetPowerState(ctx, metal3TestNamespace+"/host-booting", management.PowerOn)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("power state transition already in progress"))
+			Expect(errors.Is(err, management.ErrTransitioning)).To(BeTrue())
 		})
 
 		It("is a no-op when already in desired state", func() {
@@ -196,6 +203,86 @@ var _ = Describe("Metal3 Management Backend", func() {
 			m := newMetal3ManagementClient()
 
 			err := m.SetPowerState(ctx, "bad-id", management.PowerOn)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("TriggerRestart", func() {
+		It("sets reboot annotation on BMH without one", func() {
+			bmh := newBMHForManagement("host-1", true, true)
+			m := newMetal3ManagementClient(bmh)
+
+			err := m.TriggerRestart(ctx, metal3TestNamespace+"/host-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &metal3api.BareMetalHost{}
+			Expect(m.TestClient().Get(ctx, client.ObjectKey{
+				Namespace: metal3TestNamespace,
+				Name:      "host-1",
+			}, updated)).To(Succeed())
+			Expect(updated.Annotations).To(HaveKey(metal3api.RebootAnnotationPrefix))
+		})
+
+		It("returns ErrTransitioning when reboot annotation already exists", func() {
+			annotations := map[string]string{
+				metal3api.RebootAnnotationPrefix: "",
+			}
+			bmh := newBMHWithAnnotations("host-restarting", true, true, annotations)
+			m := newMetal3ManagementClient(bmh)
+
+			err := m.TriggerRestart(ctx, metal3TestNamespace+"/host-restarting")
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, management.ErrTransitioning)).To(BeTrue())
+		})
+
+		It("returns error for missing host", func() {
+			m := newMetal3ManagementClient()
+
+			err := m.TriggerRestart(ctx, metal3TestNamespace+"/nonexistent")
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("returns error for invalid host ID format", func() {
+			m := newMetal3ManagementClient()
+
+			err := m.TriggerRestart(ctx, "bad-id")
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("IsRestartComplete", func() {
+		It("returns true when no reboot annotation is present", func() {
+			bmh := newBMHForManagement("host-1", true, true)
+			m := newMetal3ManagementClient(bmh)
+
+			complete, err := m.IsRestartComplete(ctx, metal3TestNamespace+"/host-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(complete).To(BeTrue())
+		})
+
+		It("returns false when reboot annotation is present", func() {
+			annotations := map[string]string{
+				metal3api.RebootAnnotationPrefix: "",
+			}
+			bmh := newBMHWithAnnotations("host-restarting", true, true, annotations)
+			m := newMetal3ManagementClient(bmh)
+
+			complete, err := m.IsRestartComplete(ctx, metal3TestNamespace+"/host-restarting")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(complete).To(BeFalse())
+		})
+
+		It("returns error for missing host", func() {
+			m := newMetal3ManagementClient()
+
+			_, err := m.IsRestartComplete(ctx, metal3TestNamespace+"/nonexistent")
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("returns error for invalid host ID format", func() {
+			m := newMetal3ManagementClient()
+
+			_, err := m.IsRestartComplete(ctx, "bad-id")
 			Expect(err).To(HaveOccurred())
 		})
 	})

@@ -87,6 +87,11 @@ type BareMetalInstanceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Enum=Always;Halted
 	RunStrategy BareMetalInstanceRunStrategy `json:"runStrategy,omitempty"`
+	// RestartTrigger is used to trigger a restart of the physical machine.
+	// Change it to any value to trigger the restart.
+	// The value itself is not important; only the change matters.
+	// +kubebuilder:validation:Optional
+	RestartTrigger int64 `json:"restartTrigger"`
 }
 
 // BareMetalInstancePhaseType is a valid value for .status.phase
@@ -152,6 +157,13 @@ const (
 
 	// HostConditionReasonIronicAPIFailure indicates a power operation failed due to Ironic API error.
 	HostConditionReasonIronicAPIFailure = "IronicAPIFailure"
+
+	// HostConditionReasonPowerSyncFailed indicates a restart has failed
+	HostConditionReasonPowerSyncFailed = "PowerSyncFailed"
+
+	// HostConditionReasonPowerSyncRequired indicates a restart is required
+	// Reserved for future use — not set by any current code path
+	HostConditionReasonPowerSyncRequired = "PowerSyncRequired"
 )
 
 // HostSelectorSpec defines additional host selection constraints.
@@ -184,6 +196,9 @@ type BareMetalInstanceStatus struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Enum=Always;Halted
 	RunStrategy BareMetalInstanceRunStrategy `json:"runStrategy,omitempty"`
+	// RestartTrigger is the observed restart version of the instance
+	// +kubebuilder:validation:Optional
+	RestartTrigger int64 `json:"restartTrigger"`
 }
 
 // GetPoolID returns the owning BareMetalPool UID if the BareMetalInstance is owned by a BareMetalPool.

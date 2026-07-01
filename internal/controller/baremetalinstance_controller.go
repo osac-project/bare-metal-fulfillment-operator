@@ -333,6 +333,16 @@ func (r *BareMetalInstanceReconciler) reconcileManagement(ctx context.Context, b
 		}
 	}
 
+	// Handle restart trigger right after provisioning
+	if result, err := r.reconcileRestartTrigger(ctx, bareMetalInstance); err != nil || !result.IsZero() {
+		if err != nil {
+			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseFailed
+		} else {
+			bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseProgressing
+		}
+		return result, err
+	}
+
 	powerStatus, err := r.ManagementClient.GetPowerState(ctx, bareMetalInstance.Spec.ExternalHostID)
 	if err != nil {
 		log.Error(err, "failed to get power state", "nodeID", bareMetalInstance.Spec.ExternalHostID)
@@ -547,6 +557,106 @@ func (r *BareMetalInstanceReconciler) syncBareMetalInstanceStatus(bareMetalInsta
 			v1alpha1.HostConditionReasonPowerOff, "")
 		log.Info("BareMetalInstance power status synced", "runStrategy", bareMetalInstance.Status.RunStrategy, "condition", v1alpha1.HostConditionPowerSynced, "conditionStatus", metav1.ConditionTrue, "reason", v1alpha1.HostConditionReasonPowerOff)
 	}
+}
+
+func (r *BareMetalInstanceReconciler) reconcileRestartTrigger(ctx context.Context, bareMetalInstance *v1alpha1.BareMetalInstance) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Check if restart trigger has changed
+	if bareMetalInstance.Spec.RestartTrigger == bareMetalInstance.Status.RestartTrigger {
+		// No restart trigger change, nothing to do
+		bareMetalInstance.SetStatusCondition(
+			v1alpha1.HostConditionPowerSynced,
+			metav1.ConditionTrue,
+			"Completed",
+			"Restart trigger is up to date",
+		)
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Restart trigger changed",
+		"spec", bareMetalInstance.Spec.RestartTrigger,
+		"status", bareMetalInstance.Status.RestartTrigger,
+		"hostID", bareMetalInstance.Spec.ExternalHostID)
+
+	// Check if restart is already in progress
+	restartCond := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+	if restartCond != nil && restartCond.Status == metav1.ConditionFalse && restartCond.Reason == v1alpha1.HostConditionReasonProgressing {
+		// Check if restart has completed
+		if completed, err := r.ManagementClient.IsRestartComplete(ctx, bareMetalInstance.Spec.ExternalHostID); err != nil {
+			log.Error(err, "Failed to check restart completion", "hostID", bareMetalInstance.Spec.ExternalHostID)
+			return ctrl.Result{RequeueAfter: r.ManagementRecheckIntervalDuration}, nil
+		} else if completed {
+			log.Info("Restart completed successfully", "hostID", bareMetalInstance.Spec.ExternalHostID)
+			// Restart completed, update status and continue
+		} else {
+			// Still in progress, requeue
+			log.Info("Restart still in progress", "hostID", bareMetalInstance.Spec.ExternalHostID)
+			return ctrl.Result{RequeueAfter: r.ManagementRecheckIntervalDuration}, nil
+		}
+	} else {
+		// No restart in progress, trigger new restart
+		result, err := r.triggerRestart(ctx, bareMetalInstance)
+		if err != nil {
+			bareMetalInstance.SetStatusCondition(
+				v1alpha1.HostConditionPowerSynced,
+				metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonPowerSyncFailed,
+				fmt.Sprintf("Failed to trigger restart: %v", err),
+			)
+			return result, err
+		}
+		if !result.IsZero() {
+			return result, nil
+		}
+	}
+
+	// Update status to match spec (indicating restart completion)
+	bareMetalInstance.Status.RestartTrigger = bareMetalInstance.Spec.RestartTrigger
+	bareMetalInstance.SetStatusCondition(
+		v1alpha1.HostConditionPowerSynced,
+		metav1.ConditionTrue,
+		"Completed",
+		"Restart trigger updated",
+	)
+
+	log.Info("Restart trigger reconciled",
+		"trigger", bareMetalInstance.Spec.RestartTrigger,
+		"hostID", bareMetalInstance.Spec.ExternalHostID)
+
+	return ctrl.Result{}, nil
+}
+
+func (r *BareMetalInstanceReconciler) triggerRestart(ctx context.Context, bareMetalInstance *v1alpha1.BareMetalInstance) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	hostID := bareMetalInstance.Spec.ExternalHostID
+
+	// Trigger restart through management backend
+	if err := r.ManagementClient.TriggerRestart(ctx, hostID); err != nil {
+		if errors.Is(err, management.ErrTransitioning) {
+			log.Info("Host is already transitioning, will retry restart when host becomes idle", "hostID", hostID)
+			bareMetalInstance.SetStatusCondition(
+				v1alpha1.HostConditionPowerSynced,
+				metav1.ConditionFalse,
+				v1alpha1.HostConditionReasonPowerSyncFailed,
+				"Host is transitioning, will retry restart when host becomes idle",
+			)
+			return ctrl.Result{RequeueAfter: r.ManagementRecheckIntervalDuration}, nil
+		}
+		log.Error(err, "Failed to trigger restart", "hostID", hostID)
+		return ctrl.Result{}, fmt.Errorf("failed to trigger restart: %w", err)
+	}
+
+	log.Info("Successfully triggered restart", "hostID", hostID)
+	bareMetalInstance.SetStatusCondition(
+		v1alpha1.HostConditionPowerSynced,
+		metav1.ConditionFalse,
+		v1alpha1.HostConditionReasonProgressing,
+		"Restart operation initiated",
+	)
+
+	// Requeue to check for restart completion
+	return ctrl.Result{RequeueAfter: r.ManagementRecheckIntervalDuration}, nil
 }
 
 // handleDeletion frees the host in the inventory and removes the finalizer.

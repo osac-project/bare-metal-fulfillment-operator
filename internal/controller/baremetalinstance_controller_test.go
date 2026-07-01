@@ -67,8 +67,10 @@ func (m *mockInventoryClient) UnassignHost(ctx context.Context, inventoryHostID 
 
 // mockManagementClient implements management.Client for testing
 type mockManagementClient struct {
-	getPowerStateFunc func(ctx context.Context, hostID string) (*management.PowerStatus, error)
-	setPowerStateFunc func(ctx context.Context, hostID string, target management.PowerState) error
+	getPowerStateFunc     func(ctx context.Context, hostID string) (*management.PowerStatus, error)
+	setPowerStateFunc     func(ctx context.Context, hostID string, target management.PowerState) error
+	triggerRestartFunc    func(ctx context.Context, hostID string) error
+	isRestartCompleteFunc func(ctx context.Context, hostID string) (bool, error)
 }
 
 func (m *mockManagementClient) GetPowerState(ctx context.Context, hostID string) (*management.PowerStatus, error) {
@@ -83,6 +85,20 @@ func (m *mockManagementClient) SetPowerState(ctx context.Context, hostID string,
 		return m.setPowerStateFunc(ctx, hostID, target)
 	}
 	return nil
+}
+
+func (m *mockManagementClient) TriggerRestart(ctx context.Context, hostID string) error {
+	if m.triggerRestartFunc != nil {
+		return m.triggerRestartFunc(ctx, hostID)
+	}
+	return nil
+}
+
+func (m *mockManagementClient) IsRestartComplete(ctx context.Context, hostID string) (bool, error) {
+	if m.isRestartCompleteFunc != nil {
+		return m.isRestartCompleteFunc(ctx, hostID)
+	}
+	return true, nil
 }
 
 // mockProvisioningProvider implements provisioning.ProvisioningProvider for testing
@@ -1024,6 +1040,162 @@ var _ = Describe("BareMetalInstance Controller", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
+			})
+		})
+	})
+
+	Describe("reconcileRestartTrigger", func() {
+		var bareMetalInstance *v1alpha1.BareMetalInstance
+		var ctx context.Context
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			bareMetalInstance = &v1alpha1.BareMetalInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "restart-test-instance",
+					Namespace: namespace,
+					UID:       "test-uid-restart",
+				},
+				Spec: v1alpha1.BareMetalInstanceSpec{
+					ExternalHostID: "test-host-123",
+					RestartTrigger: 1,
+				},
+				Status: v1alpha1.BareMetalInstanceStatus{
+					RestartTrigger: 0, // Different from spec, should trigger restart
+				},
+			}
+		})
+
+		Context("when restart trigger matches status", func() {
+			BeforeEach(func() {
+				bareMetalInstance.Status.RestartTrigger = 1 // Same as spec
+			})
+
+			It("should set condition to completed and not trigger restart", func() {
+				result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+
+				condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition.Reason).To(Equal("Completed"))
+			})
+		})
+
+		Context("when restart trigger differs from status", func() {
+			Context("and no restart is in progress", func() {
+				It("should trigger restart and set in progress condition", func() {
+					triggerRestartCalled := false
+					mockMgmtClient.triggerRestartFunc = func(ctx context.Context, hostID string) error {
+						triggerRestartCalled = true
+						Expect(hostID).To(Equal("test-host-123"))
+						return nil
+					}
+
+					result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(reconciler.ManagementRecheckIntervalDuration))
+					Expect(triggerRestartCalled).To(BeTrue())
+
+					condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+					Expect(condition).NotTo(BeNil())
+					Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonProgressing))
+				})
+
+				It("should handle trigger restart failure", func() {
+					expectedErr := errors.New("restart failed")
+					mockMgmtClient.triggerRestartFunc = func(ctx context.Context, hostID string) error {
+						return expectedErr
+					}
+
+					result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+					Expect(err).To(MatchError(ContainSubstring("failed to trigger restart")))
+					Expect(result).To(Equal(ctrl.Result{}))
+
+					condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+					Expect(condition).NotTo(BeNil())
+					Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerSyncFailed))
+				})
+
+				It("should handle transitioning error", func() {
+					mockMgmtClient.triggerRestartFunc = func(ctx context.Context, hostID string) error {
+						return management.ErrTransitioning
+					}
+
+					result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(reconciler.ManagementRecheckIntervalDuration))
+
+					condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+					Expect(condition).NotTo(BeNil())
+					Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+					Expect(condition.Reason).To(Equal(v1alpha1.HostConditionReasonPowerSyncFailed))
+				})
+			})
+
+			Context("and restart is already in progress", func() {
+				BeforeEach(func() {
+					// Set the condition to indicate restart is in progress
+					bareMetalInstance.SetStatusCondition(
+						v1alpha1.HostConditionPowerSynced,
+						metav1.ConditionFalse,
+						v1alpha1.HostConditionReasonProgressing,
+						"Restart in progress",
+					)
+				})
+
+				It("should check completion and requeue if not complete", func() {
+					isRestartCompleteCalled := false
+					mockMgmtClient.isRestartCompleteFunc = func(ctx context.Context, hostID string) (bool, error) {
+						isRestartCompleteCalled = true
+						Expect(hostID).To(Equal("test-host-123"))
+						return false, nil // Not complete
+					}
+
+					result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(reconciler.ManagementRecheckIntervalDuration))
+					Expect(isRestartCompleteCalled).To(BeTrue())
+				})
+
+				It("should update status when restart completes", func() {
+					mockMgmtClient.isRestartCompleteFunc = func(ctx context.Context, hostID string) (bool, error) {
+						return true, nil // Complete
+					}
+
+					result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result).To(Equal(ctrl.Result{}))
+
+					// Status should match spec
+					Expect(bareMetalInstance.Status.RestartTrigger).To(Equal(bareMetalInstance.Spec.RestartTrigger))
+
+					condition := bareMetalInstance.GetStatusCondition(v1alpha1.HostConditionPowerSynced)
+					Expect(condition).NotTo(BeNil())
+					Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+					Expect(condition.Reason).To(Equal("Completed"))
+				})
+
+				It("should handle completion check failure", func() {
+					expectedErr := errors.New("completion check failed")
+					mockMgmtClient.isRestartCompleteFunc = func(ctx context.Context, hostID string) (bool, error) {
+						return false, expectedErr
+					}
+
+					result, err := reconciler.reconcileRestartTrigger(ctx, bareMetalInstance)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.RequeueAfter).To(Equal(reconciler.ManagementRecheckIntervalDuration))
+				})
 			})
 		})
 	})

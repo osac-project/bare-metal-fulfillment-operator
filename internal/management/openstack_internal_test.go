@@ -16,6 +16,23 @@ const (
 	newEndpoint = "http://new:6385/v1/"
 )
 
+// SetServiceClientForTest sets the service client for testing purposes
+func (c *OpenStackClient) SetServiceClientForTest(client *gophercloud.ServiceClient) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.client = client
+	c.newServiceClient = func(ctx context.Context) (*gophercloud.ServiceClient, error) {
+		return client, nil
+	}
+}
+
+// NewServiceClientForTest overrides the newServiceClient function for testing purposes
+func (c *OpenStackClient) NewServiceClientForTest(fn func(ctx context.Context) (*gophercloud.ServiceClient, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.newServiceClient = fn
+}
+
 var _ = Describe("isAuthError", func() {
 	It("should return false for nil error", func() {
 		Expect(isAuthError(nil)).To(BeFalse())
